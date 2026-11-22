@@ -189,23 +189,32 @@ def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypa
         "comparisons": [], "windows": [{"quality": "OBSERVED"}],
     })
     fake = FakeAdb()
-    state = "ON"
+    state = "OFF"
+    locked = True
     keys = []
 
     def adb_run(*args):
-        nonlocal state
+        nonlocal state, locked
         if args == ("shell", "dumpsys", "display"):
             return f"  mScreenState={state}\n".encode()
+        if args == ("shell", "dumpsys", "window", "policy"):
+            return f"  showing={str(locked).lower()}\n".encode()
+        if args == ("shell", "wm", "dismiss-keyguard"):
+            assert state == "ON"
+            keys.append("dismiss-keyguard")
+            locked = False
         if args[:3] == ("shell", "input", "keyevent"):
             keys.append(args[3])
             state = "OFF" if args[3] == "KEYCODE_SLEEP" else "ON"
+            locked = True
         return b""
 
     monkeypatch.setattr(fake, "run", adb_run)
     runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *_: None)
     _, result = runner.run(Plan((Scene("screen_off", stabilize_seconds=0, measure_seconds=0.01),)))
     assert result == "COMPLETED"
-    assert keys == ["KEYCODE_SLEEP", "KEYCODE_WAKEUP"]
+    assert keys == ["KEYCODE_WAKEUP", "dismiss-keyguard", "KEYCODE_SLEEP", "KEYCODE_WAKEUP", "dismiss-keyguard"]
+    assert not locked
     assert "MEASUREMENT_END" in fake.events
 
 
