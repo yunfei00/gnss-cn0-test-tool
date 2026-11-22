@@ -1,12 +1,45 @@
 import threading
 
-from gnss_cn0_tool.adb import LOGGER, SCENE, DeviceDisconnected, DeviceError
-from gnss_cn0_tool.run import RunControls, Runner
+import pytest
+
+from gnss_cn0_tool.adb import LOGGER, SCENE, Adb, DeviceDisconnected, DeviceError
+from gnss_cn0_tool.run import RunControls, Runner, resolve_apps
 from gnss_cn0_tool.store import Plan, RunStore, Scene
+
+
+def test_app_resolution_falls_back_to_complete_side_by_side_pair(monkeypatch):
+    checked = []
+
+    def capabilities(adb, package, operations):
+        checked.append((adb.test_apps, package))
+        if not adb.test_apps and package == SCENE:
+            raise DeviceError("protocol unavailable")
+        return {"protocol_version": 1, "scene_ids": ["video"]}
+
+    monkeypatch.setattr(Adb, "capabilities", capabilities)
+    adb = Adb(serial="fixture")
+    selected, _, _ = resolve_apps(adb, {"video"}, automatic=True)
+    assert selected.test_apps
+    assert selected.serial == adb.serial
+    assert checked == [(False, LOGGER), (False, SCENE), (True, LOGGER), (True, SCENE)]
+
+
+def test_app_resolution_explains_mixed_installation(monkeypatch):
+    def capabilities(adb, package, operations):
+        if adb.test_apps == (package == LOGGER):
+            return {"protocol_version": 1, "scene_ids": ["video"]}
+        raise DeviceError("protocol unavailable")
+
+    monkeypatch.setattr(Adb, "capabilities", capabilities)
+    with pytest.raises(DeviceError) as error:
+        resolve_apps(Adb(serial="fixture"), {"video"}, automatic=True)
+    assert "正式版采集应用未就绪" in str(error.value)
+    assert "并装联调版场景应用未就绪" in str(error.value)
 
 
 class FakeAdb:
     serial = "fixture"
+    test_apps = False
 
     def __init__(self, *, scene_error=False, disconnect=False):
         self.scene_error = scene_error
