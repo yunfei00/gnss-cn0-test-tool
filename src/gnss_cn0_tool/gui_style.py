@@ -21,7 +21,7 @@ QLabel#chartEmpty { background: #f6f9fd; border: 1px solid #e2eaf3;
                     border-radius: 6px; color: #526781; }
 QFrame#card { background: #ffffff; border: 1px solid #dce5ef; border-radius: 12px; }
 QFrame#runBar { background: #eaf0f8; border: 1px solid #dce5ef; border-radius: 12px; }
-QPushButton, QLineEdit, QComboBox {
+QPushButton, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     background: #ffffff; border: 1px solid #cfdae8; border-radius: 6px;
     min-height: 18px; padding: 7px 10px;
 }
@@ -37,6 +37,12 @@ QPushButton#primary:hover { background: #1d4eae; }
 QPushButton#primary:disabled { background: #dce7fb; color: #527098; border-color: #dce7fb; }
 QPushButton#quiet { background: transparent; border-color: transparent; color: #2158ac; }
 QPushButton#quiet:hover, QPushButton#quiet:checked { background: #edf4ff; }
+QCheckBox#sceneTile { background: #f5f8fc; border: 1px solid #dce5ef;
+                      border-radius: 7px; padding: 6px 9px; spacing: 7px; }
+QCheckBox#sceneTile:checked { background: #eaf2ff; border-color: #9cbcf0; color: #184893; }
+QCheckBox#sceneTile:hover { border-color: #789bd8; }
+QPlainTextEdit#runLog { background: #f6f9fd; border: 1px solid #e1e9f5;
+                        border-radius: 6px; padding: 6px 9px; color: #35516e; }
 QTableWidget { background: #ffffff; alternate-background-color: #f6f9fd; border: 1px solid #e2eaf3;
                border-radius: 6px; selection-background-color: #dceaff; selection-color: #132742; }
 QTableWidget::item { padding: 5px 7px; }

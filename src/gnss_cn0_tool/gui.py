@@ -3,7 +3,8 @@ import json
 import os
 import threading
 from collections import defaultdict
-from dataclasses import fields
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries
@@ -12,20 +13,24 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
+    QSpinBox,
     QStackedWidget,
-    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -39,11 +44,7 @@ from gnss_cn0_tool.reporting import replay
 from gnss_cn0_tool.run import RunControls, Runner, RunProgress
 from gnss_cn0_tool.store import Plan, RunStore, Scene
 
-SCENE_COLUMNS = [item.name for item in fields(Scene)]
-SCENE_HEADERS = [
-    "执行", "测试场景", "执行方式", "稳定等待 (s)", "采样时长 (s)", "次数",
-    "确认超时 (s)", "操作提示", "粒子数", "CPU 线程", "失败处理",
-]
+DEFAULT_SELECTION = {"screen_on", "video", "screen_off"}
 SCENE_NAMES = {
     "screen_on": "亮屏", "screen_off": "灭屏", "baseline": "空闲基准", "video": "视频", "music": "音乐",
     "game_heavy": "高负载游戏", "front_camera": "前置摄像头",
@@ -83,34 +84,11 @@ class WorkspaceCombo(QComboBox):
         painter.drawPolyline([QPoint(x - 4, y - 2), QPoint(x, y + 2), QPoint(x + 4, y - 2)])
 
 
-class ChoiceDelegate(QStyledItemDelegate):
-    def __init__(self, choices, parent, *, custom=False):
-        super().__init__(parent)
-        self.choices = choices
-        self.custom = custom
-
-    def displayText(self, value, locale):
-        return self.choices.get(value, str(value))
-
-    def createEditor(self, parent, option, index):
-        editor = WorkspaceCombo(parent)
-        editor.setEditable(self.custom)
-        for value, title in self.choices.items():
-            editor.addItem(title, value)
-        return editor
-
-    def setEditorData(self, editor, index):
-        value = index.data(Qt.ItemDataRole.EditRole)
-        choice = editor.findData(value)
-        if choice >= 0:
-            editor.setCurrentIndex(choice)
-        elif self.custom:
-            editor.setEditText(value)
-
-    def setModelData(self, editor, model, index):
-        title = editor.currentText().strip()
-        choice = editor.findText(title)
-        model.setData(index, editor.itemData(choice) if choice >= 0 else title)
+class SecondsInput(QDoubleSpinBox):
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        separator = self.locale().decimalPoint()
+        return text.rstrip("0").removesuffix(separator) if separator in text else text
 
 
 class Window(QMainWindow):
@@ -143,38 +121,37 @@ class Window(QMainWindow):
         self.adb_path.setToolTip("默认用系统 PATH 中的 adb.exe，也可指定完整路径")
         self.adb_path.editingFinished.connect(self.refresh_devices)
         self.device_status = self.label("正在扫描设备…", "pill")
-        self.device_status.setWordWrap(True)
         self.app_variant = WorkspaceCombo()
         for title, value in [("自动识别", "auto"), ("正式版", "standard"), ("并装联调版", "test")]:
             self.app_variant.addItem(title, value)
         self.refresh = QPushButton("重新扫描")
         self.refresh.clicked.connect(self.refresh_devices)
-        self.plan = QTableWidget(0, len(SCENE_COLUMNS) + 1)
-        self.configure_table(self.plan)
-        self.plan.setHorizontalHeaderLabels(SCENE_HEADERS)
-        self.plan.horizontalHeaderItem(1).setTextAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-        self.plan.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.plan.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.plan.setItemDelegateForColumn(1, ChoiceDelegate(SCENE_NAMES, self.plan, custom=True))
-        self.plan.setItemDelegateForColumn(2, ChoiceDelegate(
-            {"auto": "自动", "manual": "人工确认"}, self.plan,
-        ))
-        self.plan.setItemDelegateForColumn(10, ChoiceDelegate(
-            {"abort": "结束测试", "skip": "跳过场景"}, self.plan,
-        ))
-        self.show_advanced_columns(False)
+        self.scene_grid = QWidget()
+        self.scene_grid_layout = QGridLayout(self.scene_grid)
+        self.scene_grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.scene_grid_layout.setSpacing(7)
+        for column in range(4):
+            self.scene_grid_layout.setColumnStretch(column, 1)
+        self.scenes: dict[str, Scene] = {}
+        self.scene_checks: dict[str, QCheckBox] = {}
+        self.stabilize = self.seconds_input(0)
+        self.duration = self.seconds_input(0.001)
+        self.repeats = QSpinBox()
+        self.repeats.setRange(1, 100)
+        self.repeats.setSuffix(" 次")
         self.plan_count = self.label("", "muted")
-        self.scene_mode = QButtonGroup(self)
-        self.automatic_mode = QRadioButton("自动测试")
-        self.manual_mode = QRadioButton("手动采样")
-        self.scene_mode.addButton(self.automatic_mode)
-        self.scene_mode.addButton(self.manual_mode)
+        self.automatic_mode = QCheckBox("自动测试")
         self.automatic_mode.setChecked(True)
         self.mode_hint = self.label("", "muted")
         self.mode_hint.setWordWrap(True)
-        self.plan.itemChanged.connect(self.update_plan_count)
+        self.running = False
+        self.run_log = QPlainTextEdit()
+        self.run_log.setObjectName("runLog")
+        self.run_log.setReadOnly(True)
+        self.run_log.setMaximumBlockCount(500)
+        self.run_log.setFixedHeight(96)
+        self.run_log.setPlaceholderText("任务开始后，记录场景、进度和结果。")
+        self.last_progress_log = None
         self.history = WorkspaceCombo()
         self.report_status = self.label("选择一项历史测试查看结果。", "muted")
         self.history.currentIndexChanged.connect(self.show_report)
@@ -211,7 +188,7 @@ class Window(QMainWindow):
         self.tabs.addWidget(self.results_page())
         self.setCentralWidget(self.workspace())
         self.set_plan(Plan.default(), defaults=True)
-        self.manual_mode.toggled.connect(self.update_test_mode)
+        self.automatic_mode.toggled.connect(self.update_test_mode)
         self.load_history()
         self.show_report()
         self.set_buttons(False)
@@ -226,6 +203,14 @@ class Window(QMainWindow):
         label = QLabel(text)
         label.setObjectName(name)
         return label
+
+    def seconds_input(self, minimum):
+        field = SecondsInput()
+        field.setDecimals(3)
+        field.setRange(minimum, 3600)
+        field.setSingleStep(1)
+        field.setSuffix(" 秒")
+        return field
 
     def button(self, label, action, name=""):
         button = QPushButton(label)
@@ -287,7 +272,8 @@ class Window(QMainWindow):
         controls = self.row(status, self.confirm, self.skip, self.pause, self.cancel, self.prepare, self.start)
         controls.layout().setStretch(0, 1)
         run_bar = self.column(controls, name="runBar", margins=14)
-        main = self.column(self.tabs, run_bar, name="workspace", margins=22)
+        log_panel = self.column(self.label("运行日志", "sectionTitle"), self.run_log, name="card", margins=12)
+        main = self.column(self.tabs, log_panel, run_bar, name="workspace", margins=18)
         main.layout().setStretch(0, 1)
         shell = self.row(rail, main)
         shell.layout().setSpacing(0)
@@ -309,24 +295,26 @@ class Window(QMainWindow):
             self.row(self.label("设备连接", "sectionTitle"), None, self.device_status),
             device_fields, path_settings, name="card", margins=14,
         )
-        more = self.button("高级参数", self.show_advanced_columns, "quiet")
-        more.setCheckable(True)
-        plan_card = self.column(
-            self.row(self.label("场景计划", "sectionTitle"), self.plan_count, None,
-                     self.button("导入", self.load_plan), self.button("保存", self.save_plan),
-                     self.button("添加场景", self.add_scene), self.button("删除所选行", self.remove_scene),
-                     more),
-            self.row(self.automatic_mode, self.manual_mode, None),
-            self.mode_hint,
-            self.plan, name="card", margins=14,
+        shared_parameters = self.row(
+            self.column(self.label("稳定等待", "fieldName"), self.stabilize),
+            self.column(self.label("采样时长", "fieldName"), self.duration),
+            self.column(self.label("每场景次数", "fieldName"), self.repeats),
+            self.automatic_mode, None,
         )
-        plan_card.layout().setStretch(3, 1)
+        shared_parameters.layout().setAlignment(self.automatic_mode, Qt.AlignmentFlag.AlignBottom)
+        self.plan_card = self.column(
+            self.row(self.label("测试场景", "sectionTitle"), self.plan_count, None,
+                     self.button("导入", self.load_plan), self.button("保存", self.save_plan),
+                     self.button("添加手动场景", self.add_manual_scene, "quiet")),
+            self.scene_grid,
+            shared_parameters,
+            self.mode_hint,
+            name="card", margins=14,
+        )
         page = self.column(
             self.label("测试工作台", "pageTitle"),
-            self.label("连接 Android 手机，勾选需要执行的场景。", "muted"),
-            device_card, plan_card,
+            device_card, self.plan_card, None,
         )
-        page.layout().setStretch(3, 1)
         return page
 
     def results_page(self):
@@ -342,35 +330,31 @@ class Window(QMainWindow):
         page.layout().setStretch(1, 1)
         return page
 
-    def show_advanced_columns(self, visible):
-        first_advanced = 1 + SCENE_COLUMNS.index("manual_timeout_seconds")
-        for column in range(first_advanced, self.plan.columnCount()):
-            self.plan.setColumnHidden(column, not visible)
-        self.plan.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents if visible else QHeaderView.ResizeMode.Stretch,
-        )
-
-    def update_plan_count(self, *_):
-        mode = "manual" if self.manual_mode.isChecked() else "auto"
-        total = count = 0
-        for row in range(self.plan.rowCount()):
-            mode_item = self.plan.item(row, 2)
-            visible = mode_item is not None and mode_item.text() == mode
-            self.plan.setRowHidden(row, not visible)
-            if visible:
-                total += 1
-                count += self.plan.item(row, 0).checkState() == Qt.CheckState.Checked
-        self.plan_count.setText(f"{count} / {total} 已选")
+    def selected_scenes(self):
+        return [self.scenes[scene_id] for scene_id, box in self.scene_checks.items() if box.isChecked()]
 
     def update_test_mode(self):
-        manual = self.manual_mode.isChecked()
-        self.prepare.setVisible(manual)
+        selected = self.selected_scenes()
+        self.plan_count.setText(f"{len(selected)} / {len(self.scenes)} 已选")
+        if len(selected) > 1:
+            self.automatic_mode.setChecked(True)
+        self.automatic_mode.setEnabled(not self.running and len(selected) <= 1)
+        manual = len(selected) == 1 and not self.automatic_mode.isChecked()
+        self.prepare.setVisible(manual and not self.running)
         self.start.setText("开始手动采样" if manual else "开始自动测试")
-        self.mode_hint.setText(
-            "勾选一项。需要准备采集时先点「准备采集」，再在手机上切到目标场景并开始手动采样。"
-            if manual else "按顺序执行勾选的场景。录音机仅在勾选后运行，需事先授予麦克风权限。"
-        )
-        self.update_plan_count()
+        if manual:
+            hint = "先把手机切到目标场景再开始。若手机限制后台启动，请先点「准备采集」。"
+        elif any(scene.mode == "manual" for scene in selected):
+            hint = "外部场景仅支持手动采样。请只勾选该场景，再关闭「自动测试」。"
+        elif len(selected) > 1:
+            hint = "已选多个场景，将按从左到右、从上到下的顺序自动测试。"
+        else:
+            hint = "只选一项时，关闭「自动测试」可切换到手动采样。"
+        self.mode_hint.setText(hint)
+
+    def log_message(self, text):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.run_log.appendPlainText(f"{timestamp}  {text}")
 
     def show_progress(self, progress: RunProgress):
         remaining = progress.remaining_seconds
@@ -393,6 +377,13 @@ class Window(QMainWindow):
         self.progress_text.setText(" · ".join(details))
         self.progress_text.setVisible(bool(details))
         self.progress_bar.show()
+        if remaining is not None and (
+            remaining in {0, progress.phase_seconds} or remaining % 10 == 0
+        ):
+            entry = (self.status_title.text(), progress.processed, remaining)
+            if entry != self.last_progress_log:
+                self.log_message(" · ".join(details))
+                self.last_progress_log = entry
 
     def refresh_devices(self):
         if not self.refresh.isEnabled():
@@ -444,7 +435,8 @@ class Window(QMainWindow):
             0,
         )
         self.devices.setCurrentIndex(index)
-        self.device_status.setText(error or (
+        self.device_status.setToolTip(error)
+        self.device_status.setText("设备扫描失败" if error else (
             f"{len(devices)} 台设备 · {sum(device.state == 'device' for device in devices)} 台已授权"
             if devices else "等待连接手机"
         ))
@@ -454,56 +446,77 @@ class Window(QMainWindow):
         return f"{code.upper()} · {DEVICE_STATES[device.state]}"
 
     def set_plan(self, plan, *, defaults=False):
+        selected = {scene.scene_id: scene for scene in plan.scenes}
+        if len(selected) != len(plan.scenes):
+            raise ValueError("旧计划包含重复场景。请将重复项合并为一个场景，再用次数表示。")
         self.options = {key: getattr(plan, key) for key in self.options}
-        self.plan.setRowCount(0)
-        for scene in plan.scenes:
-            self.add_scene(scene)
-            if defaults and scene.scene_id not in {"screen_on", "video", "screen_off", "navigation_manual"}:
-                self.plan.item(self.plan.rowCount() - 1, 0).setCheckState(Qt.CheckState.Unchecked)
-        mode = self.manual_mode if all(scene.mode == "manual" for scene in plan.scenes) else self.automatic_mode
-        mode.setChecked(True)
-        self.update_plan_count()
+        for box in self.scene_checks.values():
+            self.scene_grid_layout.removeWidget(box)
+            box.hide()
+            box.deleteLater()
+        self.scenes.clear()
+        self.scene_checks.clear()
+        catalog = {scene.scene_id: scene for scene in Plan.default().scenes}
+        for scene_id, scene in selected.items():
+            if scene_id in catalog:
+                scene = replace(scene, mode=catalog[scene_id].mode)
+            self.add_scene_tile(scene, scene_id in DEFAULT_SELECTION if defaults else True)
+        for scene_id, scene in catalog.items():
+            if scene_id not in selected:
+                self.add_scene_tile(scene, False)
+        first = plan.scenes[0]
+        self.stabilize.setValue(first.stabilize_seconds)
+        self.duration.setValue(first.measure_seconds)
+        self.repeats.setValue(first.repeat)
+        self.automatic_mode.setChecked(len(plan.scenes) > 1 or first.mode == "auto")
+        self.update_test_mode()
+        if any(
+            (s.stabilize_seconds, s.measure_seconds, s.repeat)
+            != (first.stabilize_seconds, first.measure_seconds, first.repeat)
+            for s in plan.scenes
+        ):
+            self.log_message("导入的各场景参数不同，公用参数已取第一项，可在开始前调整。")
 
-    def add_scene(self, scene=None):
-        if not isinstance(scene, Scene):
-            scene = Scene("manual_scene", "manual") if self.manual_mode.isChecked() else Scene("video")
-        row = self.plan.rowCount()
-        self.plan.insertRow(row)
-        enabled = QTableWidgetItem()
-        enabled.setFlags(enabled.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        enabled.setCheckState(Qt.CheckState.Checked)
-        self.plan.setItem(row, 0, enabled)
-        for column, key in enumerate(SCENE_COLUMNS, start=1):
-            item = QTableWidgetItem(str(getattr(scene, key)))
-            if column in {2, 3, 4, 5, 6, 8, 9}:
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.plan.setItem(row, column, item)
+    def add_scene_tile(self, scene, checked):
+        name = SCENE_NAMES.get(scene.scene_id, scene.scene_id)
+        box = QCheckBox(name)
+        box.setObjectName("sceneTile")
+        if scene.mode == "manual":
+            box.setToolTip("外部场景，仅支持手动采样")
+        elif scene.scene_id == "recorder":
+            box.setToolTip("需要在手机上授予场景应用麦克风权限")
+        box.setChecked(checked)
+        box.toggled.connect(self.update_test_mode)
+        self.scene_grid_layout.addWidget(box, *divmod(len(self.scene_checks), 4))
+        self.scenes[scene.scene_id] = scene
+        self.scene_checks[scene.scene_id] = box
 
-    def remove_scene(self):
-        for row in sorted({index.row() for index in self.plan.selectedIndexes()}, reverse=True):
-            self.plan.removeRow(row)
-        self.update_plan_count()
+    def add_manual_scene(self):
+        name, accepted = QInputDialog.getText(self, "添加手动场景", "场景名称")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        if name in self.scenes or name in SCENE_NAMES.values():
+            QMessageBox.warning(self, "场景已存在", "请直接勾选列表中的场景。")
+            return
+        for box in self.scene_checks.values():
+            box.setChecked(False)
+        self.add_scene_tile(Scene(name, "manual"), True)
+        self.automatic_mode.setChecked(False)
+        self.update_test_mode()
 
-    def current_plan(self, mode=None):
-        scenes = []
-        for row in range(self.plan.rowCount()):
-            if self.plan.item(row, 0).checkState() != Qt.CheckState.Checked:
-                continue
-            if mode is not None and self.plan.item(row, 2).text() != mode:
-                continue
-            values = {}
-            for column, item in enumerate(fields(Scene), start=1):
-                value = self.plan.item(row, column).text().strip()
-                if item.name in {"stabilize_seconds", "measure_seconds", "manual_timeout_seconds"}:
-                    values[item.name] = float(value)
-                elif item.name in {"repeat", "particles", "cpu_threads"}:
-                    values[item.name] = int(value)
-                else:
-                    values[item.name] = value
-            scenes.append(Scene(**values))
+    def current_plan(self):
+        scenes = self.selected_scenes()
         if not scenes:
             raise ValueError("请至少勾选一个要执行的场景")
-        return Plan(tuple(scenes), **self.options)
+        automatic = len(scenes) > 1 or self.automatic_mode.isChecked()
+        if automatic and any(scene.mode == "manual" for scene in scenes):
+            raise ValueError("外部场景仅支持手动采样。请只选一个外部场景，并关闭「自动测试」。")
+        return Plan(tuple(replace(
+            scene, mode="auto" if automatic else "manual",
+            stabilize_seconds=self.stabilize.value(), measure_seconds=self.duration.value(),
+            repeat=self.repeats.value(),
+        ) for scene in scenes), **self.options)
 
     def load_plan(self):
         path, _ = QFileDialog.getOpenFileName(self, "载入计划", filter="JSON (*.json)")
@@ -532,10 +545,10 @@ class Window(QMainWindow):
             self.on_status("待开始", "请选择已授权的手机。待授权时请在手机上确认 USB 调试。")
             return
         try:
-            manual = self.manual_mode.isChecked()
-            plan = self.current_plan("manual" if manual else "auto")
-            if manual and len(plan.scenes) != 1:
-                raise ValueError("每次手动采样请只勾选一个场景。")
+            plan = self.current_plan()
+            manual = plan.scenes[0].mode == "manual"
+            if prepare and not manual:
+                raise ValueError("准备采集需要只选一项并关闭「自动测试」。")
         except (ValueError, TypeError) as error:
             self.on_status("请检查场景计划", str(error))
             return
@@ -551,6 +564,8 @@ class Window(QMainWindow):
             prepare_manual=prepare,
             progress=self.progress_changed.emit,
         )
+        self.run_log.clear()
+        self.last_progress_log = None
         self.set_buttons(True)
 
         def work():
@@ -564,9 +579,12 @@ class Window(QMainWindow):
         self.worker.start()
 
     def on_status(self, state, reason):
-        self.status_title.setText(RUN_STATES.get(state, state))
-        self.status.setText(SCENE_NAMES.get(reason, reason))
+        title = RUN_STATES.get(state, state)
+        detail = SCENE_NAMES.get(reason, reason)
+        self.status_title.setText(title)
+        self.status.setText(detail)
         self.status.setVisible(bool(reason))
+        self.log_message(f"{title} · {detail}" if detail else title)
         confirmation = state in {"WAITING_MANUAL_CONFIRM", "WAITING_MANUAL_EXIT"}
         prepared = state == "MANUAL_CAPTURE_PREPARED"
         self.confirm.setText("开始手动采样" if prepared else "人工确认")
@@ -582,8 +600,8 @@ class Window(QMainWindow):
             self.tabs.setCurrentIndex(1)
 
     def set_buttons(self, running):
+        self.running = running
         self.start.setVisible(not running)
-        self.prepare.setVisible(not running and self.manual_mode.isChecked())
         self.pause.setVisible(running)
         self.cancel.setVisible(running)
         self.pause.setText("场景结束后暂停")
@@ -592,8 +610,8 @@ class Window(QMainWindow):
         self.devices.setEnabled(not running)
         self.app_variant.setEnabled(not running)
         self.adb_path.setEnabled(not running)
-        self.automatic_mode.setEnabled(not running)
-        self.manual_mode.setEnabled(not running)
+        self.plan_card.setEnabled(not running)
+        self.update_test_mode()
         if running:
             self.progress_bar.setRange(0, 0)
             self.progress_bar.show()
