@@ -124,6 +124,7 @@ class Window(QMainWindow):
         self.adb_path.setPlaceholderText("输入 adb.exe 的完整路径")
         self.adb_path.setToolTip("默认用系统 PATH 中的 adb.exe，也可指定完整路径")
         self.adb_path.editingFinished.connect(self.refresh_devices)
+        self.adb_browse = self.button("浏览…", self.browse_adb_path)
         self.device_status = self.label("正在扫描设备…", "pill")
         self.device_status.setMinimumWidth(170)
         self.device_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -286,7 +287,9 @@ class Window(QMainWindow):
         return shell
 
     def plan_page(self):
-        path_settings = self.column(self.label("ADB 可执行文件", "fieldName"), self.adb_path)
+        path_row = self.row(self.adb_path, self.adb_browse)
+        path_row.layout().setStretch(0, 1)
+        path_settings = self.column(self.label("ADB 可执行文件（默认从系统 PATH 查找）", "fieldName"), path_row)
         path_settings.hide()
         advanced_connection = QPushButton("连接设置")
         advanced_connection.setObjectName("quiet")
@@ -412,6 +415,14 @@ class Window(QMainWindow):
             if entry != self.last_progress_log:
                 self.log_message(" · ".join(details))
                 self.last_progress_log = entry
+
+    def browse_adb_path(self):
+        current = Path(self.adb_path.text().strip())
+        directory = str(current.parent) if current.is_absolute() else ""
+        path, _ = QFileDialog.getOpenFileName(self, "选择 adb.exe", directory, "ADB (adb.exe)")
+        if path:
+            self.adb_path.setText(str(Path(path)))
+            self.refresh_devices()
 
     def refresh_devices(self):
         if not self.refresh.isEnabled():
@@ -638,6 +649,7 @@ class Window(QMainWindow):
         self.devices.setEnabled(not running)
         self.app_variant.setEnabled(not running)
         self.adb_path.setEnabled(not running)
+        self.adb_browse.setEnabled(not running)
         self.plan_card.setEnabled(not running)
         self.update_test_mode()
         if running:

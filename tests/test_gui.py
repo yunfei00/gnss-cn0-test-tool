@@ -1,6 +1,6 @@
 import pytest
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QFileDialog, QPushButton
 
 from gnss_cn0_tool.adb import Adb, Device
 from gnss_cn0_tool.gui import Window
@@ -66,6 +66,29 @@ def test_connection_settings_button_expands_and_collapses_adb_path(window):
     button.click()
     assert not window.adb_path.isVisible()
     assert button.text() == "连接设置"
+
+
+def test_browsing_adb_path_scans_selected_executable_and_cancel_keeps_it(window, tmp_path, monkeypatch):
+    path = tmp_path / "Android Platform Tools" / "adb.exe"
+    results = iter([(str(path), "ADB (adb.exe)"), ("", "")])
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_: next(results))
+    scanned = []
+
+    def devices(adb):
+        scanned.append(adb.executable)
+        return [Device("fixture", "device")] if adb.executable == str(path) else []
+
+    monkeypatch.setattr(Adb, "devices", devices)
+    window.adb_browse.click()
+    for _ in range(50):
+        if window.scanned_adb_path == str(path):
+            break
+        QTest.qWait(20)
+    assert window.adb_path.text() == str(path)
+    assert window.devices.currentData() == Device("fixture", "device")
+    window.adb_browse.click()
+    assert window.adb_path.text() == str(path)
+    assert scanned.count(str(path)) == 1
 
 
 def test_checked_scenes_share_timings_and_keep_grid_order(window):
