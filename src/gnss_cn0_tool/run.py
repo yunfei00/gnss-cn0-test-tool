@@ -325,8 +325,12 @@ class Runner:
                     raise DeviceError("自动场景已退出 READY")
                 if launcher and not self.is_home(launcher):
                     raise DeviceError("基准场景已离开系统启动器")
-                if display_target and self.display_state() != display_target:
-                    raise DeviceError("手机主屏状态在测试期间发生变化")
+                if display_target:
+                    current_display = self.display_state()
+                    if display_target == "OFF" and current_display.startswith("DOZE"):
+                        raise DeviceError("手机进入息屏显示。请关闭息屏显示后重新测量完全灭屏基准。")
+                    if current_display != display_target:
+                        raise DeviceError(f"手机主屏状态在测试期间变为 {current_display}")
 
             self.wait(scene.stabilize_seconds, health, countdown=True)
             self.advance("MEASURING", instance)
@@ -448,7 +452,10 @@ class Runner:
                 self.advance("REPORTING")
                 result = replay(self.folder)
                 if state == "COMPLETED":
-                    if any(row["quality"] == "TIME_SYNC_LOW_CONFIDENCE"
+                    if any(row.get("reference_status") == "MISSING_SCREEN_OFF_REFERENCE"
+                           for row in result.get("quality", [])):
+                        state, reason = "COMPLETED_WITH_WARNINGS", "缺少有效灭屏基准"
+                    elif any(row["quality"] == "TIME_SYNC_LOW_CONFIDENCE"
                            for row in self.calibrations.values()):
                         state, reason = "COMPLETED_WITH_WARNINGS", "TIME_SYNC_LOW_CONFIDENCE"
                     elif (not (result["comparisons"] or result.get("windows")) or any(

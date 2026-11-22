@@ -70,9 +70,9 @@ def test_checked_rows_only_are_kept_in_plan_order(window):
         window.current_plan()
 
 
-def test_common_scene_catalog_defaults_to_screen_on_and_video(window):
+def test_common_scene_catalog_defaults_to_screen_on_video_and_screen_off(window):
     assert [scene.scene_id for scene in window.current_plan("auto").scenes] == [
-        "screen_on", "video",
+        "screen_on", "video", "screen_off",
     ]
     rows = {window.plan.item(row, 1).text(): row for row in range(window.plan.rowCount())}
     assert {"front_camera", "rear_camera", "motor", "music", "flashlight",

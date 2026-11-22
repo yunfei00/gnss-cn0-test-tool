@@ -122,6 +122,28 @@ def test_one_second_rows_keep_empty_seconds_and_original_observations(tmp_path):
     assert any(row["constellation"] == "GALILEO" for row in observations)
 
 
+@pytest.mark.parametrize("invalid_window", [False, True])
+def test_screen_off_reference_does_not_depend_on_execution_order(tmp_path, invalid_window):
+    raw = tmp_path / "raw"
+    make_export(raw, invalid_window=invalid_window)
+    scenes = {
+        "A": {"scene_id": "screen_on"},
+        "B": {"scene_id": "video"},
+        "C": {"scene_id": "screen_off", "readiness_source": "display_observed"},
+    }
+    result = analyze(raw, scenes=scenes, require_screen_off=True)
+    if invalid_window:
+        assert result["quality"][0]["reference_status"] == "MISSING_SCREEN_OFF_REFERENCE"
+        assert result["comparisons"] == []
+        assert any(row.get("scene_id") == "video" for row in result["windows"])
+    else:
+        assert result["quality"][0]["reference_status"] == "SCREEN_OFF"
+        l1 = [row for row in result["comparisons"] if row["band"] == "L1"]
+        assert [row["a_scene_instance_id"] for row in l1] == ["C", "C"]
+        assert [row["b_scene_instance_id"] for row in l1] == ["A", "B"]
+        assert [row["mean_a_minus_b_db"] for row in l1] == [-2, 1]
+
+
 def test_rejects_boot_mismatch_or_tampered_csv(tmp_path):
     raw = tmp_path / "raw"
     make_export(raw, boot=4)
