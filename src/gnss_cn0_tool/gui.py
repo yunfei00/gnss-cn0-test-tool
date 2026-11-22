@@ -458,7 +458,7 @@ class Window(QMainWindow):
         self.plan.setRowCount(0)
         for scene in plan.scenes:
             self.add_scene(scene)
-            if defaults and scene.scene_id not in {"screen_on", "video", "navigation_manual"}:
+            if defaults and scene.scene_id not in {"screen_on", "video", "screen_off", "navigation_manual"}:
                 self.plan.item(self.plan.rowCount() - 1, 0).setCheckState(Qt.CheckState.Unchecked)
         mode = self.manual_mode if all(scene.mode == "manual" for scene in plan.scenes) else self.automatic_mode
         mode.setChecked(True)
@@ -713,6 +713,14 @@ class Window(QMainWindow):
         windows = report / "windows.csv"
         if not self.result.rowCount() and windows.is_file():
             self.show_window_summary(windows)
+        quality_file = report / "quality.csv"
+        if quality_file.is_file():
+            with quality_file.open(encoding="utf-8-sig", newline="") as stream:
+                reference = next(csv.DictReader(stream), {}).get("reference_status")
+            if reference == "MISSING_SCREEN_OFF_REFERENCE":
+                self.report_status.setText("缺少有效灭屏基准，已保留各场景数据。")
+            elif reference == "SCREEN_OFF" and summary.is_file() and self.result.columnCount() == 6:
+                self.report_status.setText(f"以灭屏为基准 · {self.result.rowCount()} 项频段比较")
         trend = report / "trend.csv"
         if not trend.is_file():
             return

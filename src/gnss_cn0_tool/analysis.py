@@ -73,7 +73,8 @@ def read_windows(path: Path, manifest: dict):
     return windows, invalid, utc_warning
 
 
-def analyze(folder: Path, *, tolerance=2_000_000, min_samples=1, scenes=None):
+def analyze(folder: Path, *, tolerance=2_000_000, min_samples=1, scenes=None,
+            require_screen_off=False):
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     names = [entry["name"] for entry in manifest["files"]]
     if (manifest["schema_version"] != 1 or len(names) != len(set(names))
@@ -111,10 +112,12 @@ def analyze(folder: Path, *, tolerance=2_000_000, min_samples=1, scenes=None):
             if elapsed in frames and frames[elapsed] != cn0:
                 raise ValueError("同一卫星帧存在冲突的 C/N0")
             frames[elapsed] = cn0
-    return summarize(windows, invalid, samples, unknown, utc_warning, min_samples, scenes or {})
+    return summarize(
+        windows, invalid, samples, unknown, utc_warning, min_samples, scenes or {}, require_screen_off,
+    )
 
 
-def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
+def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes, require_screen_off):
     by_satellite = []
     summaries = list(invalid)
     for start, end, scene in windows:
@@ -150,10 +153,29 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
             by_window[row["scene_instance_id"], row["band"]][row["svid"]] = row["mean_cn0_dbhz"]
     initial = windows[0][2] if windows else None
     baseline = initial
-    for _, _, other in windows[1:]:
+    screen_off = next((
+        instance for _, _, instance in windows
+        if scenes.get(instance, {}).get("scene_id") == "screen_off"
+        and scenes[instance].get("readiness_source") == "display_observed"
+    ), None)
+    if screen_off:
+        reference_status = "SCREEN_OFF"
+        comparison_windows = [window for window in windows if window[2] != screen_off]
+    elif require_screen_off:
+        reference_status = "MISSING_SCREEN_OFF_REFERENCE"
+        comparison_windows = []
+    else:
+        reference_status = "STANDARD"
+        comparison_windows = windows[1:]
+    for _, _, other in comparison_windows:
         kind = scenes.get(other, {}).get("scene_id")
         is_baseline = kind in {"baseline", "screen_on"}
-        reference = initial if is_baseline else baseline
+        if screen_off:
+            reference = screen_off
+            comparison_type = "baseline_drift" if kind == "screen_off" else "screen_off_reference"
+        else:
+            reference = initial if is_baseline else baseline
+            comparison_type = "baseline_drift" if is_baseline else "scene"
         for band in FREQUENCIES:
             a, b = by_window[reference, band], by_window[other, band]
             matched = sorted(a.keys() & b.keys())
@@ -166,7 +188,7 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
                 })
             per_band.append({
                 "a_scene_instance_id": reference, "b_scene_instance_id": other, "band": band,
-                "comparison": "baseline_drift" if is_baseline else "scene",
+                "comparison": comparison_type,
                 "matched_svid": ",".join(map(str, matched)),
                 "a_only_svid": ",".join(map(str, sorted(a.keys() - b.keys()))),
                 "b_only_svid": ",".join(map(str, sorted(b.keys() - a.keys()))),
@@ -187,5 +209,6 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
         "windows": summaries, "by_satellite": by_satellite, "matched_satellites": pairs,
         "comparisons": per_band, "trend": trend,
         "quality": [{"wall_clock": "UTC_JUMP" if utc_warning else "OK",
+                     "reference_status": reference_status,
                      "window_status": "OK" if windows and not invalid else "INVALID_WINDOW"}],
     }

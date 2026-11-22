@@ -15,7 +15,12 @@ def replay(folder: Path):
     options = {}
     if plan_path.is_file():
         plan = Plan.load(plan_path)
-        options = {"tolerance": plan.frequency_tolerance_hz, "min_samples": plan.min_samples}
+        options = {
+            "tolerance": plan.frequency_tolerance_hz, "min_samples": plan.min_samples,
+            "require_screen_off": any(
+                scene.mode == "auto" and scene.scene_id == "screen_off" for scene in plan.scenes
+            ),
+        }
     scenes_path = folder / "scenes.json"
     scenes = json.loads(scenes_path.read_text(encoding="utf-8")) if scenes_path.exists() else {}
     raw = folder / "raw"
