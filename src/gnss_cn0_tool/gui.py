@@ -288,8 +288,13 @@ class Window(QMainWindow):
     def plan_page(self):
         path_settings = self.column(self.label("ADB 可执行文件", "fieldName"), self.adb_path)
         path_settings.hide()
-        advanced_connection = self.button("连接设置", path_settings.setVisible, "quiet")
+        advanced_connection = QPushButton("连接设置")
+        advanced_connection.setObjectName("quiet")
         advanced_connection.setCheckable(True)
+        advanced_connection.toggled.connect(path_settings.setVisible)
+        advanced_connection.toggled.connect(
+            lambda expanded: advanced_connection.setText("收起连接设置" if expanded else "连接设置")
+        )
         device_fields = self.row(
             self.column(self.label("测试手机", "fieldName"), self.devices),
             self.column(self.label("测试应用", "fieldName"), self.app_variant),
