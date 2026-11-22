@@ -22,6 +22,36 @@ class SceneCleanupFailed(DeviceError):
     pass
 
 
+def resolve_apps(adb: Adb, needed: set[str], *, automatic=False):
+    candidates = [adb]
+    if automatic:
+        candidates.append(Adb(adb.executable, adb.serial, test_apps=not adb.test_apps))
+    errors = []
+    for candidate in candidates:
+        variant = "并装联调版" if candidate.test_apps else "正式版"
+        try:
+            logger = candidate.capabilities(LOGGER, {"start", "status", "stop", "mark", "export", "clock"})
+        except DeviceDisconnected:
+            raise
+        except DeviceError as error:
+            errors.append(f"{variant}采集应用未就绪（{error}）")
+            continue
+        try:
+            scene_app = candidate.capabilities(SCENE, {"start", "status", "stop"}) if needed else {}
+        except DeviceDisconnected:
+            raise
+        except DeviceError as error:
+            errors.append(f"{variant}场景应用未就绪（{error}）")
+            continue
+        missing = needed - set(scene_app.get("scene_ids", []))
+        if missing:
+            errors.append(f"{variant}场景应用不支持 " + "、".join(sorted(missing)))
+            continue
+        return candidate, logger, scene_app
+    explanation = "；".join(errors)
+    raise DeviceError(f"应用检查失败。请安装支持协议 v1 的对应 Android 应用。{explanation}")
+
+
 class RunControls:
     def __init__(self):
         self.cancel = threading.Event()
@@ -31,11 +61,13 @@ class RunControls:
 
 
 class Runner:
-    def __init__(self, adb: Adb, store: RunStore, controls: RunControls, update: Callable):
+    def __init__(self, adb: Adb, store: RunStore, controls: RunControls, update: Callable,
+                 *, automatic_apps=False):
         self.adb = adb
         self.store = store
         self.controls = controls
         self.update = update
+        self.automatic_apps = automatic_apps
         self.scenes = {}
         self.session = None
 
@@ -267,16 +299,16 @@ class Runner:
         try:
             self.advance("PREFLIGHT")
             self.adb.ensure_connected()
-            logger = self.adb.capabilities(LOGGER, {"start", "status", "stop", "mark", "export", "clock"})
             needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - {"baseline"}
-            scene_app = self.adb.capabilities(SCENE, {"start", "status", "stop"}) if needed else {}
-            if needed - set(scene_app.get("scene_ids", [])):
-                raise DeviceError("计划中有当前场景 APP 不支持的自动场景")
+            self.adb, logger, scene_app = resolve_apps(self.adb, needed, automatic=self.automatic_apps)
+            self.check_cancelled()
             write_json(self.folder / "environment.json", {
                 "logger": logger, "scene": scene_app,
+                "app_variant": "side_by_side" if self.adb.test_apps else "standard",
                 "device_hash": hashlib.sha256(self.adb.serial.encode()).hexdigest()[:12],
             })
-            self.advance("LOGGER_START")
+            variant = "并装联调版" if self.adb.test_apps else "正式版"
+            self.advance("LOGGER_START", reason=f"已通过{variant}应用检查")
             output = self.adb.run("shell", "am", "start", "-W", "-n",
                                   self.adb.component(LOGGER, "MainActivity"))
             if b"Error:" in output:
