@@ -28,7 +28,7 @@
 
 - [01 - 产品需求与范围](docs/01-requirements.md)
 - [02 - 系统架构、状态机与数据流](docs/02-architecture.md)
-- [03 - 跨仓库接口协议（设计草案）](docs/03-interface-protocol.md)
+- [03 - 跨仓库接口协议 v1](docs/03-interface-protocol.md)
 - [04 - 时间同步、测试分窗与 C/N0 算法](docs/04-time-cn0.md)
 - [05 - 分阶段开发计划](docs/05-development-plan.md)
 - [06 - 自动化验收与 CI](docs/06-acceptance.md)
@@ -45,7 +45,8 @@
 
 ## 重要现状提示
 
-2026-11-22 代码核对发现：GnssLoggerApp README 声称支持 ACTION_UPDATE_SCENE，但 main 的 AppActions / Receiver 未实现，卫星 CSV 也缺少 scene_name；AutoTestSceneApp 的 SceneEntryActivity 已可按 scene 启动，但 STOP 的 manifest Receiver 目前仅记录消息，且 duration 没有执行超时。详见 [代码审计](docs/08-repository-audit.md)。**不要把文档声明当成已实现接口。**
+旧版采集和场景接口的基线问题记录在 [代码审计](docs/08-repository-audit.md)。当前在线测试要求
+两个 APP 通过协议 v1 能力握手。旧版 APP 可以保留，并使用独立包名的测试 APK 联调。
 
 ## 安全与测试环境
 

@@ -1,4 +1,4 @@
-# 03 跨仓库接口协议 v1（设计草案）
+# 03 跨仓库接口协议 v1
 
 ## v1 实施约定
 
@@ -25,8 +25,10 @@ Provider 在每个操作校验调用方为 Android shell UID 2000。控制通过
   读取。NAME 来自固定文件名表，只有已停止的会话可访问。清单包含大小、SHA-256 和行数。
 - 旧 Logger START/STOP 广播继续用于原有交互式采集。v1 使用 JSONL 标注场景，
   卫星 CSV 无需增加 scene_name。无 v1 能力握手的 APP 不适用于完整实时测试。
+- 并装调试 APK 的包名多出 `.gnsstest` 后缀，authority 按实际包名生成。
+  Windows 使用“并装联调 APK”或 `--test-apps` 选项切换。
 
-> 本文为 **TO-BE 协议**，不是当前 APP 已实现 API 清单。任何新增命令在代码落地并真机验收前必须标记为“待实现”。`docs/08-repository-audit.md` 区分已有能力和差距。
+> 以上为 v1 的实际线协议。以下各节保留原始设计和兼容约束，命令名及参数以实施约定为准。实测范围见 `docs/06-acceptance.md`。
 
 ## 1. 基本原则
 

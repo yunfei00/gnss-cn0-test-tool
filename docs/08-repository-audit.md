@@ -20,6 +20,16 @@ Scene `692495560b01d6bd875d3fe430e5fa5a39295e89`。手机上的旧版 APK 均报
 基线 Actions 已核对。两个 Android main 最近一次构建成功。上位机当时没有工作流，
 三个 main 当时均无强制状态检查。
 
+## v1 联调记录
+
+- 手机中的旧版 Scene APK 签名与本机 debug APK 不同，系统拒绝原地更新。测试使用
+  `-PgnssTestSideBySide` 构建带 `.gnsstest` 后缀的 APK，原有 APP 与数据保留。
+- Logger run 的卫星 CSV 由 shell 专用 Provider 导出。真实运行只接收去掉位置字段值的卫星 CSV
+  和 JSONL，清单中的文件大小、SHA-256、行数验证通过。
+- Scene SDK CI 失败源于 setup-android 请求已移除的 `tools` 包。两个仓库改用 runner
+  的 SDK Manager 显式安装依赖后，原有单测、lint 和 APK 构建全部通过。
+- Windows main 已要求 PR 和 Windows 构建检查。详细结果见 [验收记录](06-acceptance.md)。
+
 > 核查日期：2026-11-22。依据 GitHub 三仓库 main 的 README、Manifest、Kotlin 源文件与目录树。本报告是**代码静态核查**，并非真机/构建结果。后续变更需重新核查并补上 commit SHA。
 
 ## A. gnss-cn0-test-tool
