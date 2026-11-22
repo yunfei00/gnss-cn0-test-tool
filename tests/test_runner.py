@@ -184,7 +184,8 @@ def test_scene_not_ready_never_creates_window(tmp_path, monkeypatch):
     assert fake.stopped
 
 
-def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypatch, mode):
     monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {
         "comparisons": [], "windows": [{"quality": "OBSERVED"}],
     })
@@ -196,7 +197,13 @@ def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypa
     def adb_run(*args):
         nonlocal state, locked
         if args == ("shell", "dumpsys", "display"):
-            return f"  mScreenState={state}\n".encode()
+            return (
+                f"  Display 0:\n    mBaseDisplayInfo=DisplayInfo{{state {state}, committedState {state}}}\n"
+                "    mOverrideDisplayInfo=DisplayInfo{state ON}\n"
+                "  Display 3:\n    mBaseDisplayInfo=DisplayInfo{state DOZE}\n"
+                f"Display Power Controller:\n  mDisplayId=0\n  mScreenState={state}\n"
+                "Display Power Controller:\n  mDisplayId=3\n  mScreenState=DOZE\n"
+            ).encode()
         if args == ("shell", "dumpsys", "window", "policy"):
             return f"  showing={str(locked).lower()}\n".encode()
         if args == ("shell", "wm", "dismiss-keyguard"):
@@ -210,12 +217,34 @@ def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypa
         return b""
 
     monkeypatch.setattr(fake, "run", adb_run)
-    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *_: None)
-    _, result = runner.run(Plan((Scene("screen_off", stabilize_seconds=0, measure_seconds=0.01),)))
+
+    def update(status, reason):
+        nonlocal state, locked
+        if status == "WAITING_DISPLAY_OFF":
+            assert mode == "manual"
+            assert fake.started == 1
+            state = "OFF"
+            locked = True
+
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), update, manual_ready=mode == "manual")
+    _, result = runner.run(Plan((Scene("screen_off", mode, stabilize_seconds=0, measure_seconds=0.01),)))
     assert result == "COMPLETED"
-    assert keys == ["KEYCODE_WAKEUP", "dismiss-keyguard", "KEYCODE_SLEEP", "KEYCODE_WAKEUP", "dismiss-keyguard"]
+    sleep = ["KEYCODE_SLEEP"] if mode == "auto" else []
+    assert keys == ["KEYCODE_WAKEUP", "dismiss-keyguard", *sleep, "KEYCODE_WAKEUP", "dismiss-keyguard"]
     assert not locked
     assert "MEASUREMENT_END" in fake.events
+
+
+def test_display_state_uses_only_primary_controller_if_base_state_is_absent(tmp_path, monkeypatch):
+    fake = FakeAdb()
+    dump = (b"Display Power Controller:\n  mDisplayId=0\n  mScreenState=OFF\n"
+            b"Display Power Controller:\n  mDisplayId=4\n  mScreenState=ON\n")
+    monkeypatch.setattr(fake, "run", lambda *_: dump)
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *_: None)
+    assert runner.display_state() == "OFF"
+    dump = dump.replace(b"mDisplayId=0", b"mDisplayId=2")
+    with pytest.raises(DeviceError, match="显示屏 0"):
+        runner.display_state()
 
 
 def test_disconnect_keeps_window_open_and_records_interruption(tmp_path, monkeypatch):

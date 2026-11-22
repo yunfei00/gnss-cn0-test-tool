@@ -18,7 +18,7 @@ def replay(folder: Path):
         options = {
             "tolerance": plan.frequency_tolerance_hz, "min_samples": plan.min_samples,
             "require_screen_off": any(
-                scene.mode == "auto" and scene.scene_id == "screen_off" for scene in plan.scenes
+                scene.scene_id == "screen_off" for scene in plan.scenes
             ),
         }
     scenes_path = folder / "scenes.json"

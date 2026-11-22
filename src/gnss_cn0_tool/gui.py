@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -55,6 +55,7 @@ SCENE_NAMES = {
 }
 RUN_STATES = {
     "PREPARING_DISPLAY": "正在唤醒手机并检查锁屏",
+    "WAITING_DISPLAY_OFF": "请按手机电源键灭屏",
     "PREFLIGHT": "正在检查设备和测试应用", "LOGGER_START": "正在启动采集",
     "LOGGER_READY": "采集已启动，正在标定时钟", "PREPARING_SCENE": "正在准备场景",
     "WAIT_SCENE_READY": "正在等待场景就绪", "WAITING_MANUAL_CONFIRM": "等待确认进入场景",
@@ -192,7 +193,7 @@ class Window(QMainWindow):
         self.tabs.addWidget(self.results_page())
         self.setCentralWidget(self.workspace())
         self.set_plan(Plan.default(), defaults=True)
-        self.automatic_mode.toggled.connect(self.update_test_mode)
+        self.automatic_mode.toggled.connect(self.change_test_mode)
         self.load_history()
         self.show_report()
         self.set_buttons(False)
@@ -342,23 +343,40 @@ class Window(QMainWindow):
     def selected_scenes(self):
         return [self.scenes[scene_id] for scene_id, box in self.scene_checks.items() if box.isChecked()]
 
+    def select_only_scene(self, scene_id):
+        for key, box in self.scene_checks.items():
+            with QSignalBlocker(box):
+                box.setChecked(key == scene_id)
+
+    def change_test_mode(self, automatic):
+        selected = [scene.scene_id for scene in self.selected_scenes()]
+        if not automatic and len(selected) > 1:
+            self.select_only_scene("screen_off" if "screen_off" in selected else selected[0])
+        self.update_test_mode()
+
+    def change_scene_selection(self, scene_id, checked):
+        if checked and not self.automatic_mode.isChecked():
+            self.select_only_scene(scene_id)
+        self.update_test_mode()
+
     def update_test_mode(self):
         selected = self.selected_scenes()
         self.plan_count.setText(f"{len(selected)} / {len(self.scenes)} 已选")
-        if len(selected) > 1:
-            self.automatic_mode.setChecked(True)
-        self.automatic_mode.setEnabled(not self.running and len(selected) <= 1)
-        manual = len(selected) == 1 and not self.automatic_mode.isChecked()
-        self.prepare.setVisible(manual and not self.running)
+        self.automatic_mode.setEnabled(not self.running)
+        manual = not self.automatic_mode.isChecked()
+        manual_screen_off = manual and len(selected) == 1 and selected[0].scene_id == "screen_off"
+        self.prepare.setVisible(manual and len(selected) == 1 and not manual_screen_off and not self.running)
         self.start.setText("开始手动采样" if manual else "开始自动测试")
-        if manual:
-            hint = "先把手机切到目标场景再开始。若手机限制后台启动，请先点「准备采集」。"
+        if manual_screen_off:
+            hint = "先点开始，看到日志提示后按手机电源键灭屏，检测到全灭后自动采样。"
+        elif manual:
+            hint = "单选模式。先把手机切到目标场景再开始；若手机限制后台启动，请先点「准备采集」。"
         elif any(scene.mode == "manual" for scene in selected):
             hint = "外部场景仅支持手动采样。请只勾选该场景，再关闭「自动测试」。"
         elif len(selected) > 1:
             hint = "已选多个场景，将按从左到右、从上到下的顺序自动测试。"
         else:
-            hint = "只选一项时，关闭「自动测试」可切换到手动采样。"
+            hint = "勾选场景后开始自动测试。关闭「自动测试」可切换到单场景手动采样。"
         self.mode_hint.setText(hint)
 
     def log_message(self, text):
@@ -495,7 +513,7 @@ class Window(QMainWindow):
         elif scene.scene_id == "recorder":
             box.setToolTip("需要在手机上授予场景应用麦克风权限")
         box.setChecked(checked)
-        box.toggled.connect(self.update_test_mode)
+        box.toggled.connect(lambda checked: self.change_scene_selection(scene.scene_id, checked))
         self.scene_grid_layout.addWidget(box, *divmod(len(self.scene_checks), 4))
         self.scenes[scene.scene_id] = scene
         self.scene_checks[scene.scene_id] = box
@@ -518,7 +536,7 @@ class Window(QMainWindow):
         scenes = self.selected_scenes()
         if not scenes:
             raise ValueError("请至少勾选一个要执行的场景")
-        automatic = len(scenes) > 1 or self.automatic_mode.isChecked()
+        automatic = self.automatic_mode.isChecked()
         if automatic and any(scene.mode == "manual" for scene in scenes):
             raise ValueError("外部场景仅支持手动采样。请只选一个外部场景，并关闭「自动测试」。")
         return Plan(tuple(replace(

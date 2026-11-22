@@ -267,9 +267,29 @@ class Runner:
 
     def display_state(self):
         output = self.adb.run("shell", "dumpsys", "display")
+        displays = re.split(rb"(?m)^[ \t]*Display (\d+):[ \t]*\r?$", output)
+        for display_id, section in zip(displays[1::2], displays[2::2], strict=True):
+            if display_id == b"0":
+                base = re.search(rb"(?m)^[ \t]*mBaseDisplayInfo=([^\r\n]+)", section)
+                if base:
+                    info = base.group(1)
+                    state = re.search(rb"\bcommittedState ([A-Z_]+)\b", info)
+                    if not state or state.group(1) == b"UNKNOWN":
+                        state = re.search(rb"\bstate ([A-Z_]+)\b", info)
+                    if state and state.group(1) != b"UNKNOWN":
+                        return state.group(1).decode()
+                break
+        controllers = re.split(rb"(?m)^[ \t]*Display Power Controller:[ \t]*\r?$", output)
+        if len(controllers) > 1:
+            main = [part for part in controllers[1:] if re.search(rb"(?m)^[ \t]*mDisplayId=0\b", part)]
+            legacy = (len(controllers) == 2 and displays[1::2] in ([], [b"0"])
+                      and not re.search(rb"(?m)^[ \t]*mDisplayId=", controllers[1]))
+            output = main[0] if len(main) == 1 else controllers[1] if legacy else b""
+        elif len(displays) > 3 or (len(displays) == 3 and displays[1] != b"0"):
+            output = b""
         states = set(re.findall(rb"\bmScreenState=([A-Z_]+)\b", output))
-        if len(states) != 1:
-            raise DeviceError("无法确认手机主屏状态")
+        if len(states) != 1 or b"UNKNOWN" in states:
+            raise DeviceError("无法确认手机主屏状态（Android 未报告明确的显示屏 0 状态）")
         return states.pop().decode()
 
     def set_display_state(self, target, *, cancellable=True):
@@ -311,10 +331,25 @@ class Runner:
             time.sleep(0.25)
         raise DeviceError("手机锁屏仍在显示，请在手机上解锁后重试")
 
+    def wait_for_manual_screen_off(self, scene, instance):
+        self.advance("WAITING_DISPLAY_OFF", instance, "采集已启动，按手机电源键后等待软件检测全灭。")
+        deadline = time.monotonic() + scene.manual_timeout_seconds
+        while time.monotonic() < deadline:
+            self.check_cancelled()
+            self.logger_health()
+            current = self.display_state()
+            if current == "OFF":
+                return
+            if current.startswith("DOZE"):
+                raise DeviceError(AOD_MESSAGE)
+            self.controls.cancel.wait(0.5)
+        raise DeviceError("等待手动灭屏超时")
+
     def execute_scene(self, scene: Scene, instance: str):
         auto = scene.mode == "auto" and scene.scene_id not in HOST_SCENES
+        manual_screen_off = scene.mode == "manual" and scene.scene_id == "screen_off"
         launcher = None
-        display_target = DISPLAY_SCENES.get(scene.scene_id) if scene.mode == "auto" else None
+        display_target = DISPLAY_SCENES.get(scene.scene_id) if scene.mode == "auto" or manual_screen_off else None
         restore_display = None
         measurement_finished = False
         failure = None
@@ -323,6 +358,10 @@ class Runner:
                 self.advance("WAIT_SCENE_READY", instance)
                 self.start_auto(scene, instance)
                 readiness = "app_ack"
+            elif manual_screen_off:
+                restore_display = "ON"
+                self.wait_for_manual_screen_off(scene, instance)
+                readiness = "display_observed"
             elif scene.mode == "manual":
                 if self.prepare_manual:
                     self.confirm(scene, instance, prepared=True)
@@ -344,7 +383,7 @@ class Runner:
                 readiness = "launcher_observed"
             self.scenes[instance] = {"scene_id": scene.scene_id, "readiness_source": readiness}
             write_json(self.folder / "scenes.json", self.scenes)
-            self.mark(instance, "MANUAL_CONFIRMED" if scene.mode == "manual" else "SCENE_READY")
+            self.mark(instance, "MANUAL_CONFIRMED" if scene.mode == "manual" and not display_target else "SCENE_READY")
             self.advance("STABILIZING", instance)
             self.mark(instance, "STABILIZATION_START")
 
@@ -399,7 +438,7 @@ class Runner:
             if type(failure) is DeviceError and scene.on_failure == "skip":
                 raise Skipped(str(failure)) from failure
             raise failure
-        if scene.mode == "manual" and not self.manual_ready:
+        if scene.mode == "manual" and not self.manual_ready and not manual_screen_off:
             self.confirm(scene, instance, exit_scene=True)
 
     def run(self, plan: Plan) -> tuple[str, str]:
@@ -419,7 +458,8 @@ class Runner:
         try:
             self.advance("PREFLIGHT")
             self.adb.ensure_connected()
-            if any(s.mode == "auto" and s.scene_id == "screen_off" for s in plan.scenes):
+            has_screen_off = any(s.scene_id == "screen_off" for s in plan.scenes)
+            if has_screen_off:
                 self.advance("PREPARING_DISPLAY")
                 self.wake_and_dismiss_keyguard()
             needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - HOST_SCENES
@@ -432,7 +472,7 @@ class Runner:
             })
             variant = "并装联调版" if self.adb.test_apps else "正式版"
             self.advance("LOGGER_START", reason=f"已通过{variant}应用检查")
-            if not self.manual_ready or self.prepare_manual:
+            if not self.manual_ready or self.prepare_manual or has_screen_off:
                 output = self.adb.run("shell", "am", "start", "-W", "-n",
                                       self.adb.component(LOGGER, "MainActivity"))
                 if b"Error:" in output:
