@@ -322,10 +322,7 @@ class Window(QMainWindow):
             self.mode_hint,
             name="card", margins=14,
         )
-        page = self.column(
-            self.label("测试工作台", "pageTitle"),
-            device_card, self.plan_card, None,
-        )
+        page = self.column(device_card, self.plan_card, None)
         scroll = QScrollArea()
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
