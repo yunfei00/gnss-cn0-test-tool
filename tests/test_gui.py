@@ -1,6 +1,6 @@
 import pytest
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from gnss_cn0_tool.adb import Adb, Device
 from gnss_cn0_tool.gui import Window
@@ -53,6 +53,19 @@ def test_multiple_devices_require_selection_and_disconnect_does_not_switch(windo
     assert window.devices.currentData() is None
     window.apply_devices("adb", [Device(first.serial, "device")], "")
     assert window.devices.currentData() is None
+
+
+def test_connection_settings_button_expands_and_collapses_adb_path(window):
+    window.show()
+    button = next(button for button in window.findChildren(QPushButton) if button.text() == "连接设置")
+    assert not window.adb_path.isVisible()
+    button.click()
+    assert window.adb_path.isVisible()
+    assert window.adb_path.text() == "adb"
+    assert button.text() == "收起连接设置"
+    button.click()
+    assert not window.adb_path.isVisible()
+    assert button.text() == "连接设置"
 
 
 def test_checked_scenes_share_timings_and_keep_grid_order(window):
