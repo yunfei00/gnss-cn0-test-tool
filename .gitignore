@@ -1,0 +1,15 @@
+.work/
+.venv/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+build/
+dist/
+runs/
+*.sqlite*
+*.apk
+*.kml
+*.nmea
+*.spec
+**/raw/
+*.jsonl

@@ -1,5 +1,34 @@
 # 06 验收标准、测试矩阵与 CI
 
+## 2026-11-22 实施证据
+
+| 范围 | 结果 | 可复核证据 |
+|---|---|---|
+| AC-01 设备发现/选择 | PASS | fixture 覆盖多设备和授权错误，真机有一台已授权 API 35 设备 |
+| AC-02、AC-15、AC-17 连续采集、导出、幂等 | PASS（卫星状态和事件） | 真机 Logger 两次发送同一事件 ID 返回相同回执。端到端 run `a18d0e94-a9f9-4529-8298-7840c08d0afc` 保存并核验 4,699 行卫星 CSV（含表头）和 14 条事件，覆盖三个有效边界对 |
+| AC-03、AC-04 自动视频和游戏 | PASS（调度和资源状态） | 真机分别收到 READY、START/END、STOPPED。音乐和双摄像头另做 READY/STOPPED 冒烟，前摄首次查询超时后复验通过 |
+| AC-05、AC-23 半自动门禁 | PASS（自动化和真机） | 首轮未确认时 180 秒后跳过，未写导航 START/END。第二轮 `d7bf17e6-29b3-486a-924d-0f398036f9b4` 由操作员实际确认进入和退出导航。视频与导航共用一个 Logger 会话，13,042 行卫星 CSV（含表头）及 9 条事件核验通过 |
+| AC-06–09 时间与异常、AC-10–14 频段/CSV | PASS（固定样本） | 边界包含 START 并排除 END。UTC 跳变、会话纪元错误、重复帧、坏文件和缺少 L5 回归通过 |
+| AC-16、AC-18、AC-21 断线、STOP 与 READY | PASS（自动化/已覆盖路径） | 断线不补写结束边界。旧版 STOP 失败通过真机复现。新版真机确认视频和游戏停止 |
+| AC-20、AC-22 报告与 A-B-A | PASS（固定样本） | GPS G03 L1，A=43、B=40，差值 +3 dB，A-B-A 基准漂移 +2 dB |
+| 真机时钟标定 | PASS（500 ms 门限） | 早期 Provider 标定最低约 598–619 ms，保留 TIME_SYNC_LOW_CONFIDENCE。改用经 Logger 前后读数核对的内核时钟后，真机 run `59a14824-ffee-44ef-a0d9-76865a79e7c2` 的起止不确定度为 73.9 / 81.1 ms，6,835 行卫星 CSV 和 14 条事件核验通过 |
+| 真机 GPS C/N0 与 L5 差值 | BLOCKED | 首次自动测试出现 1,824 条 GPS L1 载波记录，但无有效正值 C/N0 和 L5。最后一轮三个窗口仍无可用 GPS L1/L5，按操作员确认保留当前信号条件和未通过结果 |
+| AC-19 Windows 包 | PASS（CI 与工作机安装冒烟） | Windows CI 构建 x64 安装包与便携包。工作机以仅含 System32 的 PATH 启动安装版和便携版，并用安装版复算真机 Excel，原始 CSV 的哈希前后一致。干净 Win10/11 客户端真机流程 NOT_RUN |
+| AC-24 隐私 | PASS（此次运行范围） | 真机模式关闭 Raw 和 NMEA，卫星 CSV 经纬度列为空。真实原始文件仅留本机 |
+
+Android 构建证据为 [Logger PR CI](https://github.com/yunfei00/GnssLoggerApp/actions/runs/45008419883)、
+[Logger 分支 CI](https://github.com/yunfei00/GnssLoggerApp/actions/runs/45008415774) 和
+[Scene PR CI](https://github.com/yunfei00/AutoTestSceneApp/actions/runs/45008416990)。
+两端合并后 [Logger main CI](https://github.com/yunfei00/GnssLoggerApp/actions/runs/45008875827)、
+[Scene main CI](https://github.com/yunfei00/AutoTestSceneApp/actions/runs/45008886429) 通过。
+Windows 验证与安装产物见 [Windows PR](https://github.com/yunfei00/gnss-cn0-test-tool/pull/1) 和
+[标定修复 CI](https://github.com/yunfei00/gnss-cn0-test-tool/actions/runs/45009859495)。
+
+旧版 GNSS CSV 传至工作机的请求因潜在位置数据被自动审批拒绝。P0 通过手机内统计复核旧样本。
+新版闭环只回收位置列留空的状态和事件。可选 Raw/NMEA 联采实测出现
+`LOGGER_TimeoutException`，已停止并装测试进程并保留数据。自动审批因潜在敏感原始
+文件拒绝了后续复测命令，完整 Raw/NMEA 真机回收为 NOT_RUN。Windows 默认关闭这两项。
+
 ## 测试层次
 
 1. **单元测试（无手机）**：频段分类、单调时钟边界、卫星匹配、状态机、CSV schema、幂等、Excel 计算。

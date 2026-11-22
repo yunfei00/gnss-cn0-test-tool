@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "collect_raw": false,
+  "collect_nmea": false,
+  "scenes": [
+    {"scene_id": "baseline", "stabilize_seconds": 4, "measure_seconds": 12},
+    {"scene_id": "video", "stabilize_seconds": 3, "measure_seconds": 10},
+    {"scene_id": "game_heavy", "stabilize_seconds": 3, "measure_seconds": 10}
+  ]
+}

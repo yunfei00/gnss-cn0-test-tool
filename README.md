@@ -2,7 +2,7 @@
 
 面向 Android 手机的 **Windows GNSS C/N0 场景测试上位机**。平台通过 USB ADB 编排手机业务场景与 GNSS 日志采集，按**实际有效测试窗口**分析 GPS L1/L5 的 C/N0 差值，支持全自动与半自动混合测试，并预留 GSS7000 模拟器对接。
 
-> **状态：规划中。** 本仓库当前为新建上位机仓库；本文所述软件功能是待实现目标，不代表已经完成或通过真机测试。
+> 上位机提供协议 v1、离线回放、场景调度、趋势及 CSV/Excel 输出。按 [使用说明](docs/windows-user-guide.md) 安装，按 [验收记录](docs/06-acceptance.md) 核对设备和构建证据。
 
 ## 三仓库协同
 
@@ -28,7 +28,7 @@
 
 - [01 - 产品需求与范围](docs/01-requirements.md)
 - [02 - 系统架构、状态机与数据流](docs/02-architecture.md)
-- [03 - 跨仓库接口协议（设计草案）](docs/03-interface-protocol.md)
+- [03 - 跨仓库接口协议 v1](docs/03-interface-protocol.md)
 - [04 - 时间同步、测试分窗与 C/N0 算法](docs/04-time-cn0.md)
 - [05 - 分阶段开发计划](docs/05-development-plan.md)
 - [06 - 自动化验收与 CI](docs/06-acceptance.md)
@@ -45,7 +45,8 @@
 
 ## 重要现状提示
 
-2026-11-22 代码核对发现：GnssLoggerApp README 声称支持 ACTION_UPDATE_SCENE，但 main 的 AppActions / Receiver 未实现，卫星 CSV 也缺少 scene_name；AutoTestSceneApp 的 SceneEntryActivity 已可按 scene 启动，但 STOP 的 manifest Receiver 目前仅记录消息，且 duration 没有执行超时。详见 [代码审计](docs/08-repository-audit.md)。**不要把文档声明当成已实现接口。**
+旧版采集和场景接口的基线问题记录在 [代码审计](docs/08-repository-audit.md)。当前在线测试要求
+两个 APP 通过协议 v1 能力握手。旧版 APP 可以保留，并使用独立包名的测试 APK 联调。
 
 ## 安全与测试环境
 
