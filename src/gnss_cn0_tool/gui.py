@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -101,7 +102,7 @@ class Window(QMainWindow):
         super().__init__()
         self.setWindowTitle("GNSS C/N₀ 测试工作台")
         self.resize(1240, 820)
-        self.setMinimumSize(840, 680)
+        self.setMinimumSize(880, 760)
         self.setStyleSheet(WORKSPACE_STYLE)
         local = Path(os.environ.get("LOCALAPPDATA", Path.home()))
         self.store = RunStore(local / "GNSS CN0" / "runs")
@@ -121,6 +122,8 @@ class Window(QMainWindow):
         self.adb_path.setToolTip("默认用系统 PATH 中的 adb.exe，也可指定完整路径")
         self.adb_path.editingFinished.connect(self.refresh_devices)
         self.device_status = self.label("正在扫描设备…", "pill")
+        self.device_status.setMinimumWidth(170)
+        self.device_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.app_variant = WorkspaceCombo()
         for title, value in [("自动识别", "auto"), ("正式版", "standard"), ("并装联调版", "test")]:
             self.app_variant.addItem(title, value)
@@ -149,7 +152,7 @@ class Window(QMainWindow):
         self.run_log.setObjectName("runLog")
         self.run_log.setReadOnly(True)
         self.run_log.setMaximumBlockCount(500)
-        self.run_log.setFixedHeight(96)
+        self.run_log.setFixedHeight(80)
         self.run_log.setPlaceholderText("任务开始后，记录场景、进度和结果。")
         self.last_progress_log = None
         self.history = WorkspaceCombo()
@@ -315,7 +318,12 @@ class Window(QMainWindow):
             self.label("测试工作台", "pageTitle"),
             device_card, self.plan_card, None,
         )
-        return page
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        page.setObjectName("workspace")
+        scroll.setWidget(page)
+        return scroll
 
     def results_page(self):
         panel = self.column(
