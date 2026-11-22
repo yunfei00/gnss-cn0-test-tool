@@ -1,5 +1,25 @@
 # 08 现有代码事实与待解决缺口
 
+## P0 实测记录（2026-11-22）
+
+上位机基线 `9c2f9cd8d86aabd2d8926de7615c220bd58dba02`，
+Logger `e367782ffaeea9f5290a444f29e27bdd1b7ca249`，
+Scene `692495560b01d6bd875d3fe430e5fa5a39295e89`。手机上的旧版 APK 均报告 1.0，
+安装版本不能据此关联到源码 SHA。
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| ADB / 安装 / 授权 | PASS | 一台已授权设备，API 35，定位已开启，Logger 有精确和后台定位权限，Scene 有相机权限 |
+| 旧版视频和高负载游戏启动 | PASS | `am start -W` 后对应 Activity 位于前台，媒体和计算负载状态未由旧协议确认 |
+| 旧版显式 STOP | FAIL | 视频和游戏收到广播后仍为 top resumed Activity，随后仅停止了测试 Scene APP |
+| 旧版 Logger 前台服务 | PASS | 先打开 Logger 主界面再发 START，`dumpsys activity services` 确认定位服务处于前台，然后发送 STOP |
+| 直接读取内部目录 | FAIL | 普通 shell 读取内部目录得到 Permission denied。当前源码优先使用 APP 专用外部目录，内部目录是回退路径 |
+| 旧版卫星样本 | PASS | 手机端读取 APP 专用外部目录，统计 182 条卫星记录，其中 GPS L1 112 条、L5 0 条。原始轨迹没有离开手机 |
+| 旧版 L5 和跨文件导出完整性 | NOT_RUN | 本次样本无 L5。旧接口没有会话导出清单 |
+
+基线 Actions 已核对。两个 Android main 最近一次构建成功。上位机当时没有工作流，
+三个 main 当时均无强制状态检查。
+
 > 核查日期：2026-11-22。依据 GitHub 三仓库 main 的 README、Manifest、Kotlin 源文件与目录树。本报告是**代码静态核查**，并非真机/构建结果。后续变更需重新核查并补上 commit SHA。
 
 ## A. gnss-cn0-test-tool
