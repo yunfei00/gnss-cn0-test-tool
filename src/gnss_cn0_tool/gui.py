@@ -339,9 +339,7 @@ class Window(QMainWindow):
         )
         panel.layout().setStretch(2, 1)
         panel.layout().setStretch(3, 2)
-        page = self.column(self.label("历史与报告", "pageTitle"), panel)
-        page.layout().setStretch(1, 1)
-        return page
+        return panel
 
     def selected_scenes(self):
         return [self.scenes[scene_id] for scene_id, box in self.scene_checks.items() if box.isChecked()]
