@@ -184,6 +184,31 @@ def test_scene_not_ready_never_creates_window(tmp_path, monkeypatch):
     assert fake.stopped
 
 
+def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {
+        "comparisons": [], "windows": [{"quality": "OBSERVED"}],
+    })
+    fake = FakeAdb()
+    state = "ON"
+    keys = []
+
+    def adb_run(*args):
+        nonlocal state
+        if args == ("shell", "dumpsys", "display"):
+            return f"  mScreenState={state}\n".encode()
+        if args[:3] == ("shell", "input", "keyevent"):
+            keys.append(args[3])
+            state = "OFF" if args[3] == "KEYCODE_SLEEP" else "ON"
+        return b""
+
+    monkeypatch.setattr(fake, "run", adb_run)
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *_: None)
+    _, result = runner.run(Plan((Scene("screen_off", stabilize_seconds=0, measure_seconds=0.01),)))
+    assert result == "COMPLETED"
+    assert keys == ["KEYCODE_SLEEP", "KEYCODE_WAKEUP"]
+    assert "MEASUREMENT_END" in fake.events
+
+
 def test_disconnect_keeps_window_open_and_records_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {})
     fake = FakeAdb(disconnect=True)

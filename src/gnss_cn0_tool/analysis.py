@@ -152,7 +152,8 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
     baseline = initial
     for _, _, other in windows[1:]:
         kind = scenes.get(other, {}).get("scene_id")
-        reference = initial if kind == "baseline" else baseline
+        is_baseline = kind in {"baseline", "screen_on"}
+        reference = initial if is_baseline else baseline
         for band in FREQUENCIES:
             a, b = by_window[reference, band], by_window[other, band]
             matched = sorted(a.keys() & b.keys())
@@ -165,7 +166,7 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
                 })
             per_band.append({
                 "a_scene_instance_id": reference, "b_scene_instance_id": other, "band": band,
-                "comparison": "baseline_drift" if kind == "baseline" else "scene",
+                "comparison": "baseline_drift" if is_baseline else "scene",
                 "matched_svid": ",".join(map(str, matched)),
                 "a_only_svid": ",".join(map(str, sorted(a.keys() - b.keys()))),
                 "b_only_svid": ",".join(map(str, sorted(b.keys() - a.keys()))),
@@ -174,7 +175,7 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes):
                     "NO_L5_DATA" if band == "L5" and (not a or not b) else "NO_MATCHED_SATELLITES"
                 ),
             })
-        if kind == "baseline":
+        if is_baseline:
             baseline = other
     trend = [
         {"scene_instance_id": scene, "band": band, "svid": svid, "elapsed_ns": elapsed,

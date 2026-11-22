@@ -6,6 +6,7 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 
 from gnss_cn0_tool.analysis import analyze
+from gnss_cn0_tool.observations import observation_tables
 from gnss_cn0_tool.store import Plan
 
 
@@ -33,7 +34,8 @@ def replay(folder: Path):
         "test_run_id": manifest["test_run_id"], "logger_session_id": manifest["logger_session_id"],
         "boot_count": manifest["boot_count"], "delta": "A minus B (dB)",
     }]
-    write_reports(folder / "reports", result)
+    extra = observation_tables(raw, manifest, scenes, options.get("tolerance", 2_000_000))
+    write_reports(folder / "reports", result, extra)
     return result
 
 
@@ -43,11 +45,14 @@ def safe_csv_value(value):
     return value
 
 
-def write_reports(folder: Path, tables):
+def write_reports(folder: Path, tables, extra=()):
     folder.mkdir(exist_ok=True)
     workbook = Workbook(write_only=True)
-    for name, rows in tables.items():
-        keys = list(dict.fromkeys(key for row in rows for key in row))
+    primary = [
+        (name, list(dict.fromkeys(key for row in rows for key in row)), rows)
+        for name, rows in tables.items()
+    ]
+    for name, keys, rows in [*primary, *extra]:
         csv_partial = folder / (name + ".csv.partial")
         sheet = workbook.create_sheet(name)
         if keys:

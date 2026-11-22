@@ -1,5 +1,6 @@
 import hashlib
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -10,6 +11,9 @@ from uuid import uuid4
 from gnss_cn0_tool.adb import LOGGER, SCENE, Adb, DeviceDisconnected, DeviceError
 from gnss_cn0_tool.reporting import replay
 from gnss_cn0_tool.store import Plan, RunStore, Scene, write_json
+
+DISPLAY_SCENES = {"screen_on": "ON", "screen_off": "OFF"}
+HOST_SCENES = {"baseline", *DISPLAY_SCENES}
 
 
 class Cancelled(Exception):
@@ -260,9 +264,32 @@ class Runner:
             for line in output.splitlines()
         )
 
+    def display_state(self):
+        output = self.adb.run("shell", "dumpsys", "display")
+        states = set(re.findall(rb"\bmScreenState=([A-Z_]+)\b", output))
+        if len(states) != 1:
+            raise DeviceError("无法确认手机主屏状态")
+        return states.pop().decode()
+
+    def set_display_state(self, target, *, cancellable=True):
+        if self.display_state() == target:
+            return
+        button = "KEYCODE_WAKEUP" if target == "ON" else "KEYCODE_SLEEP"
+        self.adb.run("shell", "input", "keyevent", button)
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            if cancellable:
+                self.check_cancelled()
+            if self.display_state() == target:
+                return
+            time.sleep(0.25)
+        raise DeviceError(f"手机主屏未切换到 {'亮屏' if target == 'ON' else '灭屏'}")
+
     def execute_scene(self, scene: Scene, instance: str):
-        auto = scene.mode == "auto" and scene.scene_id != "baseline"
+        auto = scene.mode == "auto" and scene.scene_id not in HOST_SCENES
         launcher = None
+        display_target = DISPLAY_SCENES.get(scene.scene_id) if scene.mode == "auto" else None
+        restore_display = None
         measurement_finished = False
         failure = None
         try:
@@ -276,6 +303,13 @@ class Runner:
                 elif not self.manual_ready:
                     self.confirm(scene, instance)
                 readiness = "manual_preselected" if self.manual_ready else "manual_confirm"
+            elif display_target:
+                previous = self.display_state()
+                if previous not in {"ON", "OFF"}:
+                    raise DeviceError("手机主屏当前处于过渡或息屏显示状态，无法安全切换")
+                restore_display = previous if previous != display_target else None
+                self.set_display_state(display_target)
+                readiness = "display_observed"
             else:
                 launcher = self.baseline()
                 readiness = "launcher_observed"
@@ -291,6 +325,8 @@ class Runner:
                     raise DeviceError("自动场景已退出 READY")
                 if launcher and not self.is_home(launcher):
                     raise DeviceError("基准场景已离开系统启动器")
+                if display_target and self.display_state() != display_target:
+                    raise DeviceError("手机主屏状态在测试期间发生变化")
 
             self.wait(scene.stabilize_seconds, health, countdown=True)
             self.advance("MEASURING", instance)
@@ -302,6 +338,14 @@ class Runner:
         except (DeviceError, Cancelled, Skipped) as error:
             failure = error
         finally:
+            if restore_display:
+                self.advance("STOPPING_SCENE", instance)
+                try:
+                    self.set_display_state(restore_display, cancellable=False)
+                except DeviceDisconnected:
+                    raise
+                except DeviceError as error:
+                    raise SceneCleanupFailed(f"无法恢复手机主屏状态：{error}") from error
             if auto:
                 self.advance("STOPPING_SCENE", instance)
                 try:
@@ -339,7 +383,7 @@ class Runner:
         try:
             self.advance("PREFLIGHT")
             self.adb.ensure_connected()
-            needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - {"baseline"}
+            needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - HOST_SCENES
             self.adb, logger, scene_app = resolve_apps(self.adb, needed, automatic=self.automatic_apps)
             self.check_cancelled()
             write_json(self.folder / "environment.json", {
