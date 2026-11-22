@@ -6,7 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,7 +37,7 @@ SCENE_COLUMNS = [item.name for item in fields(Scene)]
 class Window(QMainWindow):
     status_changed = Signal(str, str)
     worker_finished = Signal(str, str)
-    devices_found = Signal(object, str)
+    devices_found = Signal(str, object, str)
 
     def __init__(self):
         super().__init__()
@@ -52,12 +52,20 @@ class Window(QMainWindow):
             "collect_nmea": False, "collect_raw": False,
         }
         self.devices = QComboBox()
+        self.devices.addItem("请选择设备", None)
+        self.devices.setMinimumWidth(165)
+        self.auto_select_device = True
+        self.scanned_adb_path = None
         self.adb_path = QLineEdit("adb")
+        self.adb_path.setMaximumWidth(440)
+        self.adb_path.editingFinished.connect(self.refresh_devices)
+        self.device_status = QLabel("正在扫描设备…")
+        self.device_status.setWordWrap(True)
         self.test_apps = QCheckBox("并装联调 APK")
         self.refresh = QPushButton("扫描设备")
         self.refresh.clicked.connect(self.refresh_devices)
-        self.plan = QTableWidget(0, len(SCENE_COLUMNS))
-        self.plan.setHorizontalHeaderLabels(SCENE_COLUMNS)
+        self.plan = QTableWidget(0, len(SCENE_COLUMNS) + 1)
+        self.plan.setHorizontalHeaderLabels(["执行", *SCENE_COLUMNS])
         self.history = QComboBox()
         self.history.currentIndexChanged.connect(self.show_report)
         self.result = QTableWidget()
@@ -75,6 +83,7 @@ class Window(QMainWindow):
         self.devices_found.connect(self.apply_devices)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.page(self.row(QLabel("ADB"), self.adb_path, self.devices, self.refresh, self.test_apps),
+                                   self.device_status,
                                    self.row(self.button("载入计划", self.load_plan),
                                             self.button("保存计划", self.save_plan),
                                             self.button("添加场景", self.add_scene),
@@ -91,6 +100,11 @@ class Window(QMainWindow):
         self.set_plan(Plan.default())
         self.load_history()
         self.set_buttons(False)
+        self.device_timer = QTimer(self)
+        self.device_timer.setInterval(3000)
+        self.device_timer.timeout.connect(self.refresh_devices)
+        self.device_timer.start()
+        QTimer.singleShot(0, self.refresh_devices)
 
     def button(self, label, action):
         button = QPushButton(label)
@@ -112,24 +126,58 @@ class Window(QMainWindow):
         return widget
 
     def refresh_devices(self):
+        if not self.refresh.isEnabled():
+            return
         self.refresh.setEnabled(False)
-        executable = self.adb_path.text()
+        executable = self.adb_path.text().strip()
 
         def find():
             try:
-                self.devices_found.emit(Adb(executable).devices(), "")
+                devices = Adb(executable).devices()
             except DeviceError as error:
-                self.devices_found.emit([], str(error))
+                self.devices_found.emit(executable, [], str(error))
+            except (OSError, ValueError):
+                self.devices_found.emit(executable, [], "无法运行 ADB，请检查可执行文件路径")
+            else:
+                self.devices_found.emit(executable, devices, "")
 
         threading.Thread(target=find, daemon=True).start()
 
-    def apply_devices(self, devices, error):
+    def apply_devices(self, executable, devices, error):
         self.refresh.setEnabled(True)
-        self.devices.clear()
-        self.devices.addItem("请选择设备", None)
-        for device in devices:
+        if executable != self.adb_path.text().strip():
+            self.refresh_devices()
+            return
+        self.scanned_adb_path = executable
+        selected = self.devices.currentData()
+        selected_serial = selected.serial if selected else None
+        by_serial = {device.serial: device for device in devices}
+        if self.auto_select_device and len(by_serial) == 1 and devices[0].state == "device":
+            selected_serial = devices[0].serial
+            self.auto_select_device = False
+        elif len(by_serial) > 1 or selected is not None:
+            self.auto_select_device = False
+
+        # Update rows in place so polling preserves the list order and current selection.
+        for index in range(self.devices.count() - 1, 0, -1):
+            previous = self.devices.itemData(index)
+            updated = by_serial.pop(previous.serial, None)
+            if updated is None:
+                self.devices.removeItem(index)
+            elif updated != previous:
+                self.devices.setItemText(index, updated.label)
+                self.devices.setItemData(index, updated)
+        for device in by_serial.values():
             self.devices.addItem(device.label, device)
-        self.status.setText(error or ("请选择设备" if devices else "ADB 未发现设备"))
+        index = next(
+            (i for i in range(1, self.devices.count())
+             if self.devices.itemData(i).serial == selected_serial),
+            0,
+        )
+        self.devices.setCurrentIndex(index)
+        self.device_status.setText(error or (
+            f"已发现 {len(devices)} 台设备" if devices else "ADB 未发现设备"
+        ))
 
     def set_plan(self, plan):
         self.options = {key: getattr(plan, key) for key in self.options}
@@ -141,7 +189,11 @@ class Window(QMainWindow):
         scene = scene if isinstance(scene, Scene) else Scene("baseline")
         row = self.plan.rowCount()
         self.plan.insertRow(row)
-        for column, key in enumerate(SCENE_COLUMNS):
+        enabled = QTableWidgetItem()
+        enabled.setFlags(enabled.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        enabled.setCheckState(Qt.CheckState.Checked)
+        self.plan.setItem(row, 0, enabled)
+        for column, key in enumerate(SCENE_COLUMNS, start=1):
             self.plan.setItem(row, column, QTableWidgetItem(str(getattr(scene, key))))
         self.plan.resizeColumnsToContents()
 
@@ -152,8 +204,10 @@ class Window(QMainWindow):
     def current_plan(self):
         scenes = []
         for row in range(self.plan.rowCount()):
+            if self.plan.item(row, 0).checkState() != Qt.CheckState.Checked:
+                continue
             values = {}
-            for column, item in enumerate(fields(Scene)):
+            for column, item in enumerate(fields(Scene), start=1):
                 value = self.plan.item(row, column).text().strip()
                 if item.name in {"stabilize_seconds", "measure_seconds", "manual_timeout_seconds"}:
                     values[item.name] = float(value)
@@ -162,6 +216,8 @@ class Window(QMainWindow):
                 else:
                     values[item.name] = value
             scenes.append(Scene(**values))
+        if not scenes:
+            raise ValueError("请至少勾选一个要执行的场景")
         return Plan(tuple(scenes), **self.options)
 
     def load_plan(self):
@@ -181,6 +237,11 @@ class Window(QMainWindow):
                 QMessageBox.warning(self, "保存失败", str(error))
 
     def start_run(self):
+        executable = self.adb_path.text().strip()
+        if executable != self.scanned_adb_path:
+            self.refresh_devices()
+            self.status.setText("等待扫描当前 ADB 路径的设备")
+            return
         device = self.devices.currentData()
         if not device or device.state != "device":
             self.status.setText("请选择已授权的 ADB 设备")
@@ -193,7 +254,7 @@ class Window(QMainWindow):
         for event in vars(self.controls).values():
             event.clear()
         runner = Runner(
-            Adb(self.adb_path.text(), device.serial, test_apps=self.test_apps.isChecked()),
+            Adb(executable, device.serial, test_apps=self.test_apps.isChecked()),
             self.store, self.controls,
             self.status_changed.emit,
         )
