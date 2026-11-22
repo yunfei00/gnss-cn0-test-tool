@@ -11,7 +11,7 @@ from gnss_cn0_tool.analysis import analyze
 from gnss_cn0_tool.reporting import replay
 
 
-def make_export(raw: Path, *, boot=3, invalid_window=False):
+def make_export(raw: Path, *, boot=3, invalid_window=False, elapsed_scale=1):
     raw.mkdir()
     columns = (
         "timestamp_ms", "elapsed_realtime_nanos", "session_id", "constellation_name",
@@ -34,7 +34,8 @@ def make_export(raw: Path, *, boot=3, invalid_window=False):
             (22, "GALILEO", 3, 60, 1575420000),
             (30, "GPS", 3, 41, 1575420000),
         ]:
-            writer.writerow((800000 + ns, ns, "SESSION", constellation, svid, value, frequency))
+            writer.writerow((800000 + ns, ns * elapsed_scale,
+                             "SESSION", constellation, svid, value, frequency))
     events = []
     for index, (scene, ns, kind) in enumerate([
         ("A", 10, "MEASUREMENT_START"), ("A", 15, "MEASUREMENT_END"),
@@ -47,7 +48,7 @@ def make_export(raw: Path, *, boot=3, invalid_window=False):
             "test_run_id": "RUN", "logger_session_id": "SESSION", "boot_count": boot,
             "protocol_version": 1, "ack": "persisted", "scene_instance_id": scene,
             "event_id": str(index), "timestamp_ms": 5000 if index > 1 else 0,
-            "elapsed_realtime_nanos": ns, "event_type": kind,
+            "elapsed_realtime_nanos": ns * elapsed_scale, "event_type": kind,
         })
     (raw / "events.jsonl").write_text(
         "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
@@ -95,6 +96,30 @@ def test_incomplete_boundary_is_not_estimated(tmp_path):
     result = analyze(tmp_path / "raw")
     assert {"scene_instance_id": "C", "quality": "INVALID_WINDOW"} in result["windows"]
     assert all(row["scene_instance_id"] != "C" for row in result["trend"])
+
+
+def test_one_second_rows_keep_empty_seconds_and_original_observations(tmp_path):
+    raw = tmp_path / "raw"
+    make_export(raw, elapsed_scale=1_000_000_000)
+    original = (raw / "satellites.csv").read_bytes()
+    replay(tmp_path)
+    assert (raw / "satellites.csv").read_bytes() == original
+    with (tmp_path / "reports/observations_1s.csv").open(encoding="utf-8-sig", newline="") as stream:
+        seconds = list(csv.DictReader(stream))
+    assert len(seconds) == 15
+    assert seconds[0]["time_beijing"] == "1970-01-01 08:00:00.000+08:00"
+    assert seconds[0]["frame_time_beijing"] == "1970-01-01 08:13:20.010+08:00"
+    assert seconds[1]["recorded_frames"] == "1"
+    assert seconds[1]["gps_l5_dbhz"] == "G03=29"
+    assert seconds[3]["status"] == "NO_FRAME"
+    assert not seconds[3]["frame_time_beijing"]
+    with (tmp_path / "reports/satellite_observations.csv").open(
+        encoding="utf-8-sig", newline="",
+    ) as stream:
+        observations = list(csv.DictReader(stream))
+    assert len(observations) == 12
+    assert not observations[0]["scene_instance_id"]
+    assert any(row["constellation"] == "GALILEO" for row in observations)
 
 
 def test_rejects_boot_mismatch_or_tampered_csv(tmp_path):

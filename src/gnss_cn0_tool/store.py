@@ -63,7 +63,9 @@ class Plan:
     @classmethod
     def default(cls):
         return cls((
-            Scene("baseline"), Scene("video"), Scene("game_heavy"),
+            Scene("screen_on"), Scene("front_camera"), Scene("rear_camera"), Scene("motor"),
+            Scene("music"), Scene("video"), Scene("flashlight"), Scene("recorder"),
+            Scene("white_screen"), Scene("screen_off"),
             Scene("navigation_manual", "manual", instructions="请在手机上打开导航并启动路线"),
         ))
 

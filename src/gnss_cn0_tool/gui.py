@@ -45,9 +45,10 @@ SCENE_HEADERS = [
     "确认超时 (s)", "操作提示", "粒子数", "CPU 线程", "失败处理",
 ]
 SCENE_NAMES = {
-    "baseline": "空闲基准", "video": "视频播放", "music": "音乐播放",
+    "screen_on": "亮屏", "screen_off": "灭屏", "baseline": "空闲基准", "video": "视频", "music": "音乐",
     "game_heavy": "高负载游戏", "front_camera": "前置摄像头",
     "rear_camera": "后置摄像头", "navigation_manual": "第三方导航",
+    "motor": "马达", "flashlight": "手电筒", "recorder": "录音机", "white_screen": "白屏",
     "manual_scene": "自定义手动场景",
 }
 RUN_STATES = {
@@ -209,7 +210,7 @@ class Window(QMainWindow):
         self.tabs.addWidget(self.plan_page())
         self.tabs.addWidget(self.results_page())
         self.setCentralWidget(self.workspace())
-        self.set_plan(Plan.default())
+        self.set_plan(Plan.default(), defaults=True)
         self.manual_mode.toggled.connect(self.update_test_mode)
         self.load_history()
         self.show_report()
@@ -330,7 +331,8 @@ class Window(QMainWindow):
 
     def results_page(self):
         panel = self.column(
-            self.row(self.history, None, self.button("离线回放", self.replay_folder),
+            self.row(self.history, None, self.button("打开每秒数据", self.open_timed_data),
+                     self.button("离线回放", self.replay_folder),
                      self.button("打开报告目录", self.open_reports)),
             self.report_status, self.result, self.chart_stack, name="card", margins=14,
         )
@@ -366,7 +368,7 @@ class Window(QMainWindow):
         self.start.setText("开始手动采样" if manual else "开始自动测试")
         self.mode_hint.setText(
             "勾选一项。需要准备采集时先点「准备采集」，再在手机上切到目标场景并开始手动采样。"
-            if manual else "按顺序执行勾选的自动场景。空闲基准可按需勾选。"
+            if manual else "按顺序执行勾选的场景。录音机仅在勾选后运行，需事先授予麦克风权限。"
         )
         self.update_plan_count()
 
@@ -451,11 +453,13 @@ class Window(QMainWindow):
         code = device.label.split()[0]
         return f"{code.upper()} · {DEVICE_STATES[device.state]}"
 
-    def set_plan(self, plan):
+    def set_plan(self, plan, *, defaults=False):
         self.options = {key: getattr(plan, key) for key in self.options}
         self.plan.setRowCount(0)
         for scene in plan.scenes:
             self.add_scene(scene)
+            if defaults and scene.scene_id not in {"screen_on", "video", "navigation_manual"}:
+                self.plan.item(self.plan.rowCount() - 1, 0).setCheckState(Qt.CheckState.Unchecked)
         mode = self.manual_mode if all(scene.mode == "manual" for scene in plan.scenes) else self.automatic_mode
         mode.setChecked(True)
         self.update_plan_count()
@@ -633,6 +637,14 @@ class Window(QMainWindow):
         folder = self.history.currentData()
         if folder and (folder / "reports").is_dir():
             os.startfile(folder / "reports")
+
+    def open_timed_data(self):
+        folder = self.history.currentData()
+        path = folder / "reports" / "observations_1s.csv" if folder else None
+        if path and path.is_file():
+            os.startfile(path)
+        elif folder:
+            self.report_status.setText("此记录没有每秒表。离线回放该运行目录即可补生成。")
 
     def show_window_summary(self, path):
         self.result.setColumnCount(4)

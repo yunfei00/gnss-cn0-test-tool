@@ -14,6 +14,9 @@ Provider 在每个操作校验调用方为 Android shell UID 2000。控制通过
   `scene_instance_id`（UUID）和 `duration`（安全超时秒数）。实例 ID 同时用作启动/停止
   的幂等键。场景 Provider 的 `status`、`stop` 参数均为实例 ID。
   支持范围由实时能力声明决定。旧 Activity 参数仍可用。
+  常用场景扩展使用现有 v1 协议的 `scene_ids`，新增 `motor`、`flashlight`、
+  `recorder`、`white_screen`，仅在设备声明相应能力时启用。录音负载的临时文件留在
+  场景应用私有缓存，并在停止后清理。亮屏和灭屏由 Windows 通过 ADB 单独验证显示电源状态。
 - Logger 的 `start`、`status`、`stop`、`export` 使用 run UUID。
   主界面在首次启动采集时应位于前台。run UUID 是 start/stop 的幂等键。
   `start` 可附加 `:nmea` 以显式启用 NMEA。默认记录卫星状态和 Raw Measurements，
