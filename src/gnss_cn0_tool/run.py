@@ -243,8 +243,7 @@ class Runner:
             raise DeviceError("ADB 无法启动 Scene Activity")
         self.wait_state(SCENE, instance, "READY")
 
-    def baseline(self):
-        self.adb.run("shell", "input", "keyevent", "KEYCODE_HOME")
+    def go_home(self):
         resolved = self.adb.run(
             "shell", "cmd", "package", "resolve-activity", "--brief",
             "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME",
@@ -252,18 +251,24 @@ class Runner:
         launcher, separator, _ = resolved[-1].partition("/") if resolved else ("", "", "")
         if not launcher or not separator:
             raise DeviceError("无法识别系统启动器")
+        self.adb.run("shell", "input", "keyevent", "KEYCODE_HOME")
         for _ in range(10):
             if self.is_home(launcher):
                 return launcher
             self.wait(0.2)
-        raise DeviceError("基准场景下启动器未处于前台")
+        raise DeviceError("按 Home 后，系统桌面未在主屏前台")
 
     def is_home(self, launcher):
         output = self.adb.run("shell", "dumpsys", "activity", "activities")
-        return any(
-            b"topResumedActivity" in line and (launcher + "/").encode() in line
-            for line in output.splitlines()
-        )
+        displays = re.split(rb"(?m)^[ \t]*Display #(\d+)\b[^\r\n]*", output)
+        if len(displays) > 1:
+            output = next((section for display_id, section in zip(displays[1::2], displays[2::2], strict=True)
+                           if display_id == b"0"), b"")
+        for field in (rb"topResumedActivity\s*=", rb"(?:mResumedActivity|ResumedActivity|Resumed):"):
+            resumed = re.search(rb"(?m)^[ \t]*" + field + rb"([^\r\n]*)", output)
+            if resumed:
+                return bool(re.search(rb"\su\d+ " + re.escape(launcher.encode()) + rb"/", resumed[1]))
+        return False
 
     def display_state(self):
         output = self.adb.run("shell", "dumpsys", "display")
@@ -350,7 +355,7 @@ class Runner:
         manual_screen_off = scene.mode == "manual" and scene.scene_id == "screen_off"
         launcher = None
         display_target = DISPLAY_SCENES.get(scene.scene_id) if scene.mode == "auto" or manual_screen_off else None
-        restore_display = None
+        restore_after_off = False
         measurement_finished = False
         failure = None
         try:
@@ -359,7 +364,7 @@ class Runner:
                 self.start_auto(scene, instance)
                 readiness = "app_ack"
             elif manual_screen_off:
-                restore_display = "ON"
+                restore_after_off = True
                 self.wait_for_manual_screen_off(scene, instance)
                 readiness = "display_observed"
             elif scene.mode == "manual":
@@ -368,18 +373,15 @@ class Runner:
                 elif not self.manual_ready:
                     self.confirm(scene, instance)
                 readiness = "manual_preselected" if self.manual_ready else "manual_confirm"
-            elif display_target:
-                previous = self.display_state()
-                if display_target == "OFF":
-                    restore_display = "ON"
-                elif previous not in {"ON", "OFF"}:
-                    raise DeviceError("手机主屏当前处于过渡或息屏显示状态，无法安全切换")
-                elif previous != display_target:
-                    restore_display = previous
-                self.set_display_state(display_target)
+            elif display_target == "OFF":
+                restore_after_off = True
+                self.set_display_state("OFF")
                 readiness = "display_observed"
             else:
-                launcher = self.baseline()
+                if display_target == "ON":
+                    self.wake_and_dismiss_keyguard()
+                self.advance("PREPARING_HOME", instance)
+                launcher = self.go_home()
                 readiness = "launcher_observed"
             self.scenes[instance] = {"scene_id": scene.scene_id, "readiness_source": readiness}
             write_json(self.folder / "scenes.json", self.scenes)
@@ -391,14 +393,16 @@ class Runner:
                 self.logger_health()
                 if auto and self.adb.call(SCENE, "status", instance).get("state") != "READY":
                     raise DeviceError("自动场景已退出 READY")
-                if launcher and not self.is_home(launcher):
-                    raise DeviceError("基准场景已离开系统启动器")
                 if display_target:
                     current_display = self.display_state()
                     if display_target == "OFF" and current_display.startswith("DOZE"):
                         raise DeviceError(AOD_MESSAGE)
+                    if display_target == "ON" and current_display in {"OFF", "DOZE", "DOZE_SUSPEND"}:
+                        raise DeviceError("亮屏测量中主屏已熄灭，请检查自动休眠时长后重试")
                     if current_display != display_target:
                         raise DeviceError(f"手机主屏状态在测试期间变为 {current_display}")
+                if launcher and not self.is_home(launcher):
+                    raise DeviceError("测量期间，系统桌面已离开主屏前台")
 
             self.wait(scene.stabilize_seconds, health, countdown=True)
             self.advance("MEASURING", instance)
@@ -410,13 +414,10 @@ class Runner:
         except (DeviceError, Cancelled, Skipped) as error:
             failure = error
         finally:
-            if restore_display:
+            if restore_after_off:
                 self.advance("STOPPING_SCENE", instance)
                 try:
-                    if display_target == "OFF":
-                        self.wake_and_dismiss_keyguard(cancellable=False)
-                    else:
-                        self.set_display_state(restore_display, cancellable=False)
+                    self.wake_and_dismiss_keyguard(cancellable=False)
                 except DeviceDisconnected:
                     raise
                 except DeviceError as error:
@@ -459,7 +460,7 @@ class Runner:
             self.advance("PREFLIGHT")
             self.adb.ensure_connected()
             has_screen_off = any(s.scene_id == "screen_off" for s in plan.scenes)
-            if has_screen_off:
+            if has_screen_off or any(s.mode == "auto" and s.scene_id == "screen_on" for s in plan.scenes):
                 self.advance("PREPARING_DISPLAY")
                 self.wake_and_dismiss_keyguard()
             needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - HOST_SCENES

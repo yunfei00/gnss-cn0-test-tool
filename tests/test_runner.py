@@ -247,6 +247,50 @@ def test_display_state_uses_only_primary_controller_if_base_state_is_absent(tmp_
         runner.display_state()
 
 
+@pytest.mark.parametrize("change", [None, "sleep", "leave_home"])
+def test_screen_on_uses_home_on_primary_display_and_checks_it_during_sampling(tmp_path, monkeypatch, change):
+    fake = FakeAdb()
+    calls = []
+    home = False
+
+    def adb_run(*args):
+        nonlocal home
+        calls.append(args)
+        measuring = "MEASUREMENT_START" in fake.events
+        if args == ("shell", "dumpsys", "display"):
+            return b"mScreenState=OFF" if measuring and change == "sleep" else b"mScreenState=ON"
+        if args == ("shell", "dumpsys", "window", "policy"):
+            return b"showing=false"
+        if args[:4] == ("shell", "cmd", "package", "resolve-activity"):
+            return b"com.example.launcher/.Home"
+        if args == ("shell", "input", "keyevent", "KEYCODE_HOME"):
+            assert fake.started == 1
+            home = True
+        if args == ("shell", "dumpsys", "activity", "activities"):
+            foreground = b"com.example.launcher/.Home" if home and not (measuring and change == "leave_home") else (
+                b"com.example.logger/.MainActivity"
+            )
+            return (b"Display #2 (activities from top to bottom):\n"
+                    b"  topResumedActivity=ActivityRecord{1 u0 com.example.launcher/.Home}\n"
+                    b"Display #0 (activities from top to bottom):\n"
+                    b"  topResumedActivity=ActivityRecord{2 u0 " + foreground + b"}\n")
+        return b""
+
+    monkeypatch.setattr(fake, "run", adb_run)
+    monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {"windows": [{"quality": "OBSERVED"}], "comparisons": []})
+    statuses = []
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *args: statuses.append(args))
+    _, result = runner.run(Plan((Scene("screen_on", stabilize_seconds=0, measure_seconds=0.01),)))
+    assert calls.count(("shell", "input", "keyevent", "KEYCODE_HOME")) == 1
+    if change is None:
+        assert result == "COMPLETED"
+        assert "MEASUREMENT_END" in fake.events
+    else:
+        assert result == "FAILED"
+        assert "MEASUREMENT_END" not in fake.events
+        assert ("自动休眠" if change == "sleep" else "离开主屏前台") in statuses[-1][1]
+
+
 def test_disconnect_keeps_window_open_and_records_interruption(tmp_path, monkeypatch):
     monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {})
     fake = FakeAdb(disconnect=True)
