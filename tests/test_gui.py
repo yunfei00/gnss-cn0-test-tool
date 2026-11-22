@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication
 
 from gnss_cn0_tool.adb import Adb, Device
 from gnss_cn0_tool.gui import Window
+from gnss_cn0_tool.run import RunProgress
 
 
 @pytest.fixture
@@ -58,13 +59,46 @@ def test_checked_rows_only_are_kept_in_plan_order(window):
     assert all(window.plan.item(row, 0).checkState() == Qt.CheckState.Checked
                for row in range(window.plan.rowCount()))
     for row in range(window.plan.rowCount()):
-        if row not in {1, 5}:
+        if row not in {1, 3}:
             window.plan.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
     plan = window.current_plan()
     assert [(scene.scene_id, scene.mode) for scene in plan.scenes] == [
         ("video", "auto"), ("navigation_manual", "manual"),
     ]
     window.plan.item(1, 0).setCheckState(Qt.CheckState.Unchecked)
-    window.plan.item(5, 0).setCheckState(Qt.CheckState.Unchecked)
+    window.plan.item(3, 0).setCheckState(Qt.CheckState.Unchecked)
     with pytest.raises(ValueError, match="至少勾选"):
         window.current_plan()
+
+
+def test_modes_have_separate_selections_and_one_default_baseline(window):
+    assert [scene.scene_id for scene in window.current_plan("auto").scenes] == [
+        "baseline", "video", "game_heavy",
+    ]
+    assert window.plan.isRowHidden(3)
+    window.manual_mode.setChecked(True)
+    assert window.plan.isRowHidden(0)
+    assert not window.plan.isRowHidden(3)
+    assert window.current_plan("manual").scenes[0].scene_id == "navigation_manual"
+    assert window.start.text() == "开始手动采样"
+
+
+def test_progress_displays_actual_phase_remaining_time(window):
+    window.show_progress(RunProgress(3, 1, "video", 1, 1, 12, 20))
+    assert window.progress_bar.value() == 8
+    assert window.progress_bar.maximum() == 20
+    assert "第 2 项 · 视频播放" in window.progress_text.text()
+    assert "剩余 12 秒" in window.progress_text.text()
+
+
+def test_single_scene_report_shows_window_summary(window, tmp_path):
+    report = tmp_path / "report-run" / "reports"
+    report.mkdir(parents=True)
+    (report / "windows.csv").write_text(
+        "scene_id,band,satellites,quality\nnavigation_manual,L5,0,NO_L5_DATA\n",
+        encoding="utf-8",
+    )
+    window.history.addItem("手动采样", report.parent)
+    assert window.result.horizontalHeaderItem(0).text() == "测试场景"
+    assert window.result.item(0, 0).text() == "第三方导航"
+    assert window.result.item(0, 3).text() == "无有效 L5 数据"

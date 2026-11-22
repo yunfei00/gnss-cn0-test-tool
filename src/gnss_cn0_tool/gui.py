@@ -21,7 +21,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
+    QRadioButton,
     QStackedWidget,
     QStyledItemDelegate,
     QTableWidget,
@@ -34,7 +36,7 @@ from PySide6.QtWidgets import (
 from gnss_cn0_tool.adb import Adb, DeviceError
 from gnss_cn0_tool.gui_style import WORKSPACE_STYLE
 from gnss_cn0_tool.reporting import replay
-from gnss_cn0_tool.run import RunControls, Runner
+from gnss_cn0_tool.run import RunControls, Runner, RunProgress
 from gnss_cn0_tool.store import Plan, RunStore, Scene
 
 SCENE_COLUMNS = [item.name for item in fields(Scene)]
@@ -46,12 +48,14 @@ SCENE_NAMES = {
     "baseline": "空闲基准", "video": "视频播放", "music": "音乐播放",
     "game_heavy": "高负载游戏", "front_camera": "前置摄像头",
     "rear_camera": "后置摄像头", "navigation_manual": "第三方导航",
+    "manual_scene": "自定义手动场景",
 }
 RUN_STATES = {
     "PREFLIGHT": "正在检查设备和测试应用", "LOGGER_START": "正在启动采集",
     "LOGGER_READY": "采集已启动，正在标定时钟", "PREPARING_SCENE": "正在准备场景",
     "WAIT_SCENE_READY": "正在等待场景就绪", "WAITING_MANUAL_CONFIRM": "等待确认进入场景",
     "WAITING_MANUAL_EXIT": "等待确认退出场景", "STABILIZING": "等待场景稳定",
+    "MANUAL_CAPTURE_PREPARED": "采集已准备好",
     "MEASURING": "正在采样", "STOPPING_SCENE": "正在结束场景", "PAUSED": "任务已暂停",
     "SKIPPED": "场景已跳过", "FINALIZING": "正在停止采集并回收数据",
     "REPORTING": "正在生成报告", "COMPLETED": "测试完成", "COMPLETED_WITH_WARNINGS": "测试完成，有质量提示",
@@ -60,7 +64,8 @@ RUN_STATES = {
 DEVICE_STATES = {"device": "已授权", "offline": "离线", "unauthorized": "待授权"}
 QUALITY_STATES = {
     "OBSERVED": "有有效数据", "NO_L5_DATA": "无有效 L5 数据",
-    "NO_MATCHED_SATELLITES": "无匹配卫星",
+    "NO_L1_DATA": "无有效 L1 数据", "NO_MATCHED_SATELLITES": "无匹配卫星",
+    "INSUFFICIENT_SAMPLES": "有效样本不足", "INVALID_WINDOW": "采样窗口无效",
 }
 
 
@@ -111,6 +116,7 @@ class Window(QMainWindow):
     status_changed = Signal(str, str)
     worker_finished = Signal(str, str)
     devices_found = Signal(str, object, str)
+    progress_changed = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -159,6 +165,14 @@ class Window(QMainWindow):
         ))
         self.show_advanced_columns(False)
         self.plan_count = self.label("", "muted")
+        self.scene_mode = QButtonGroup(self)
+        self.automatic_mode = QRadioButton("自动测试")
+        self.manual_mode = QRadioButton("手动采样")
+        self.scene_mode.addButton(self.automatic_mode)
+        self.scene_mode.addButton(self.manual_mode)
+        self.automatic_mode.setChecked(True)
+        self.mode_hint = self.label("", "muted")
+        self.mode_hint.setWordWrap(True)
         self.plan.itemChanged.connect(self.update_plan_count)
         self.history = WorkspaceCombo()
         self.report_status = self.label("选择一项历史测试查看结果。", "muted")
@@ -176,12 +190,19 @@ class Window(QMainWindow):
         self.status_title = self.label("待开始", "statusTitle")
         self.status = self.label("选择手机和场景后即可开始测试。", "muted")
         self.status.setWordWrap(True)
+        self.progress_text = self.label("", "muted")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(420)
+        self.progress_bar.hide()
+        self.progress_text.hide()
         self.start = self.button("开始测试", self.start_run, "primary")
+        self.prepare = self.button("准备采集", lambda: self.start_run(prepare=True))
         self.pause = self.button("场景结束后暂停", self.toggle_pause)
         self.cancel = self.button("取消", self.controls.cancel.set)
-        self.confirm = self.button("人工确认", self.controls.manual.set)
+        self.confirm = self.button("人工确认", self.controls.manual.set, "primary")
         self.skip = self.button("跳过", self.controls.skip.set)
         self.status_changed.connect(self.on_status)
+        self.progress_changed.connect(self.show_progress)
         self.worker_finished.connect(self.on_finished)
         self.devices_found.connect(self.apply_devices)
         self.tabs = QStackedWidget()
@@ -189,9 +210,11 @@ class Window(QMainWindow):
         self.tabs.addWidget(self.results_page())
         self.setCentralWidget(self.workspace())
         self.set_plan(Plan.default())
+        self.manual_mode.toggled.connect(self.update_test_mode)
         self.load_history()
         self.show_report()
         self.set_buttons(False)
+        self.update_test_mode()
         self.device_timer = QTimer(self)
         self.device_timer.setInterval(3000)
         self.device_timer.timeout.connect(self.refresh_devices)
@@ -258,9 +281,9 @@ class Window(QMainWindow):
         navigation.idClicked.connect(self.tabs.setCurrentIndex)
         self.tabs.currentChanged.connect(lambda index: navigation.button(index).setChecked(True))
         rail.layout().addStretch()
-        status = self.column(self.status_title, self.status)
+        status = self.column(self.status_title, self.status, self.progress_text, self.progress_bar)
         status.layout().setSpacing(4)
-        controls = self.row(status, self.confirm, self.skip, self.pause, self.cancel, self.start)
+        controls = self.row(status, self.confirm, self.skip, self.pause, self.cancel, self.prepare, self.start)
         controls.layout().setStretch(0, 1)
         run_bar = self.column(controls, name="runBar", margins=14)
         main = self.column(self.tabs, run_bar, name="workspace", margins=22)
@@ -292,9 +315,11 @@ class Window(QMainWindow):
                      self.button("导入", self.load_plan), self.button("保存", self.save_plan),
                      self.button("添加场景", self.add_scene), self.button("删除所选行", self.remove_scene),
                      more),
+            self.row(self.automatic_mode, self.manual_mode, None),
+            self.mode_hint,
             self.plan, name="card", margins=14,
         )
-        plan_card.layout().setStretch(1, 1)
+        plan_card.layout().setStretch(3, 1)
         page = self.column(
             self.label("测试工作台", "pageTitle"),
             self.label("连接 Android 手机，勾选需要执行的场景。", "muted"),
@@ -324,12 +349,48 @@ class Window(QMainWindow):
         )
 
     def update_plan_count(self, *_):
-        count = sum(
-            self.plan.item(row, 0) is not None
-            and self.plan.item(row, 0).checkState() == Qt.CheckState.Checked
-            for row in range(self.plan.rowCount())
+        mode = "manual" if self.manual_mode.isChecked() else "auto"
+        total = count = 0
+        for row in range(self.plan.rowCount()):
+            mode_item = self.plan.item(row, 2)
+            visible = mode_item is not None and mode_item.text() == mode
+            self.plan.setRowHidden(row, not visible)
+            if visible:
+                total += 1
+                count += self.plan.item(row, 0).checkState() == Qt.CheckState.Checked
+        self.plan_count.setText(f"{count} / {total} 已选")
+
+    def update_test_mode(self):
+        manual = self.manual_mode.isChecked()
+        self.prepare.setVisible(manual)
+        self.start.setText("开始手动采样" if manual else "开始自动测试")
+        self.mode_hint.setText(
+            "勾选一项。需要准备采集时先点「准备采集」，再在手机上切到目标场景并开始手动采样。"
+            if manual else "按顺序执行勾选的自动场景。空闲基准可按需勾选。"
         )
-        self.plan_count.setText(f"{count} / {self.plan.rowCount()} 已选")
+        self.update_plan_count()
+
+    def show_progress(self, progress: RunProgress):
+        remaining = progress.remaining_seconds
+        if remaining is not None and progress.phase_seconds:
+            self.progress_bar.setRange(0, progress.phase_seconds)
+            self.progress_bar.setValue(progress.phase_seconds - remaining)
+            self.progress_bar.setFormat("本阶段 %v / %m 秒")
+        else:
+            self.progress_bar.setRange(0, progress.total)
+            self.progress_bar.setValue(progress.processed)
+            self.progress_bar.setFormat("已处理 %v / %m 次")
+        details = [f"已处理 {progress.processed} / {progress.total} 次"]
+        if progress.scene:
+            name = SCENE_NAMES.get(progress.scene, progress.scene)
+            details.append(f"第 {progress.processed + 1} 项 · {name}")
+        if progress.repeats > 1:
+            details.append(f"本场景第 {progress.repetition} / {progress.repeats} 次")
+        if remaining is not None:
+            details.append(f"剩余 {remaining} 秒")
+        self.progress_text.setText(" · ".join(details))
+        self.progress_text.setVisible(bool(details))
+        self.progress_bar.show()
 
     def refresh_devices(self):
         if not self.refresh.isEnabled():
@@ -395,10 +456,13 @@ class Window(QMainWindow):
         self.plan.setRowCount(0)
         for scene in plan.scenes:
             self.add_scene(scene)
+        mode = self.manual_mode if all(scene.mode == "manual" for scene in plan.scenes) else self.automatic_mode
+        mode.setChecked(True)
         self.update_plan_count()
 
     def add_scene(self, scene=None):
-        scene = scene if isinstance(scene, Scene) else Scene("baseline")
+        if not isinstance(scene, Scene):
+            scene = Scene("manual_scene", "manual") if self.manual_mode.isChecked() else Scene("video")
         row = self.plan.rowCount()
         self.plan.insertRow(row)
         enabled = QTableWidgetItem()
@@ -416,10 +480,12 @@ class Window(QMainWindow):
             self.plan.removeRow(row)
         self.update_plan_count()
 
-    def current_plan(self):
+    def current_plan(self, mode=None):
         scenes = []
         for row in range(self.plan.rowCount()):
             if self.plan.item(row, 0).checkState() != Qt.CheckState.Checked:
+                continue
+            if mode is not None and self.plan.item(row, 2).text() != mode:
                 continue
             values = {}
             for column, item in enumerate(fields(Scene), start=1):
@@ -451,7 +517,7 @@ class Window(QMainWindow):
             except (ValueError, OSError, TypeError) as error:
                 QMessageBox.warning(self, "保存失败", str(error))
 
-    def start_run(self):
+    def start_run(self, *, prepare=False):
         executable = self.adb_path.text().strip()
         if executable != self.scanned_adb_path:
             self.refresh_devices()
@@ -462,7 +528,10 @@ class Window(QMainWindow):
             self.on_status("待开始", "请选择已授权的手机。待授权时请在手机上确认 USB 调试。")
             return
         try:
-            plan = self.current_plan()
+            manual = self.manual_mode.isChecked()
+            plan = self.current_plan("manual" if manual else "auto")
+            if manual and len(plan.scenes) != 1:
+                raise ValueError("每次手动采样请只勾选一个场景。")
         except (ValueError, TypeError) as error:
             self.on_status("请检查场景计划", str(error))
             return
@@ -474,6 +543,9 @@ class Window(QMainWindow):
             self.store, self.controls,
             self.status_changed.emit,
             automatic_apps=variant == "auto",
+            manual_ready=manual,
+            prepare_manual=prepare,
+            progress=self.progress_changed.emit,
         )
         self.set_buttons(True)
 
@@ -491,11 +563,13 @@ class Window(QMainWindow):
         self.status_title.setText(RUN_STATES.get(state, state))
         self.status.setText(SCENE_NAMES.get(reason, reason))
         self.status.setVisible(bool(reason))
-        manual = state in {"WAITING_MANUAL_CONFIRM", "WAITING_MANUAL_EXIT"}
-        self.confirm.setEnabled(manual)
-        self.confirm.setVisible(manual)
-        self.skip.setEnabled(manual)
-        self.skip.setVisible(manual)
+        confirmation = state in {"WAITING_MANUAL_CONFIRM", "WAITING_MANUAL_EXIT"}
+        prepared = state == "MANUAL_CAPTURE_PREPARED"
+        self.confirm.setText("开始手动采样" if prepared else "人工确认")
+        self.confirm.setEnabled(confirmation or prepared)
+        self.confirm.setVisible(confirmation or prepared)
+        self.skip.setEnabled(confirmation)
+        self.skip.setVisible(confirmation)
 
     def on_finished(self, run_id, state):
         self.set_buttons(False)
@@ -505,6 +579,7 @@ class Window(QMainWindow):
 
     def set_buttons(self, running):
         self.start.setVisible(not running)
+        self.prepare.setVisible(not running and self.manual_mode.isChecked())
         self.pause.setVisible(running)
         self.cancel.setVisible(running)
         self.pause.setText("场景结束后暂停")
@@ -513,6 +588,12 @@ class Window(QMainWindow):
         self.devices.setEnabled(not running)
         self.app_variant.setEnabled(not running)
         self.adb_path.setEnabled(not running)
+        self.automatic_mode.setEnabled(not running)
+        self.manual_mode.setEnabled(not running)
+        if running:
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.show()
+            self.progress_text.hide()
 
     def toggle_pause(self):
         if self.controls.pause.is_set():
@@ -552,6 +633,22 @@ class Window(QMainWindow):
         folder = self.history.currentData()
         if folder and (folder / "reports").is_dir():
             os.startfile(folder / "reports")
+
+    def show_window_summary(self, path):
+        self.result.setColumnCount(4)
+        self.result.setHorizontalHeaderLabels(["测试场景", "频段", "卫星数", "数据质量"])
+        with path.open(encoding="utf-8-sig", newline="") as stream:
+            for index, row in enumerate(csv.DictReader(stream)):
+                scene = row.get("scene_id") or row.get("scene_instance_id", "")[:8]
+                quality = row.get("quality", "")
+                self.result.insertRow(index)
+                for column, value in enumerate((
+                    SCENE_NAMES.get(scene, scene), row.get("band") or "—", row.get("satellites") or "—",
+                    QUALITY_STATES.get(quality, quality),
+                )):
+                    self.result.setItem(index, column, QTableWidgetItem(value))
+        if self.result.rowCount():
+            self.report_status.setText(f"{self.result.rowCount()} 项频段采样结果")
 
     def show_report(self):
         self.chart_stack.setCurrentWidget(self.chart_empty)
@@ -601,6 +698,9 @@ class Window(QMainWindow):
                         self.result.setItem(index, column, QTableWidgetItem(cell))
             if self.result.rowCount():
                 self.report_status.setText(f"{self.result.rowCount()} 项频段比较")
+        windows = report / "windows.csv"
+        if not self.result.rowCount() and windows.is_file():
+            self.show_window_summary(windows)
         trend = report / "trend.csv"
         if not trend.is_file():
             return

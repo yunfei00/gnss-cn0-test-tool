@@ -129,6 +129,51 @@ def test_manual_requires_confirmation_and_reuses_one_logger(tmp_path, monkeypatc
     assert store.history()[0][1] == "COMPLETED"
 
 
+def test_preselected_manual_scene_does_not_switch_foreground_or_wait(tmp_path, monkeypatch):
+    monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {"comparisons": [{"quality": "OBSERVED"}]})
+    fake = FakeAdb()
+
+    def reject_foreground_changes(*_):
+        pytest.fail("manual sampling issued a foreground command")
+
+    monkeypatch.setattr(fake, "run", reject_foreground_changes)
+    states = []
+    progress = []
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda state, _: states.append(state),
+                    manual_ready=True, progress=progress.append)
+    _, state = runner.run(Plan((Scene("external", "manual", 0, 0.02),)))
+    assert state == "COMPLETED"
+    assert "WAITING_MANUAL_CONFIRM" not in states
+    assert "WAITING_MANUAL_EXIT" not in states
+    assert fake.events == ["MANUAL_CONFIRMED", "STABILIZATION_START", "MEASUREMENT_START", "MEASUREMENT_END"]
+    assert any(item.remaining_seconds == 1 for item in progress)
+    assert progress[-1].processed == progress[-1].total == 1
+
+
+def test_prepared_manual_scene_starts_only_after_operator_click(tmp_path, monkeypatch):
+    monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {
+        "comparisons": [], "windows": [{"quality": "OBSERVED"}],
+    })
+    fake = FakeAdb()
+    commands = []
+    monkeypatch.setattr(fake, "run", lambda *args: commands.append(args) or b"")
+    controls = RunControls()
+    states = []
+
+    def update(state, _):
+        states.append(state)
+        if state == "MANUAL_CAPTURE_PREPARED":
+            assert not fake.events
+            controls.manual.set()
+
+    runner = Runner(fake, RunStore(tmp_path), controls, update, manual_ready=True, prepare_manual=True)
+    _, state = runner.run(Plan((Scene("external", "manual", 0, 0.02),)))
+    assert state == "COMPLETED"
+    assert len(commands) == 1 and commands[0][-1].endswith(".MainActivity")
+    assert "WAITING_MANUAL_EXIT" not in states
+    assert "MEASUREMENT_END" in fake.events
+
+
 def test_scene_not_ready_never_creates_window(tmp_path, monkeypatch):
     monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {})
     fake = FakeAdb(scene_error=True)

@@ -1,7 +1,9 @@
 import hashlib
+import math
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -60,37 +62,63 @@ class RunControls:
         self.skip = threading.Event()
 
 
+@dataclass(frozen=True)
+class RunProgress:
+    total: int
+    processed: int = 0
+    scene: str = ""
+    repetition: int = 0
+    repeats: int = 0
+    remaining_seconds: int | None = None
+    phase_seconds: int = 0
+
+
 class Runner:
     def __init__(self, adb: Adb, store: RunStore, controls: RunControls, update: Callable,
-                 *, automatic_apps=False):
+                 *, automatic_apps=False, manual_ready=False, prepare_manual=False, progress=None):
         self.adb = adb
         self.store = store
         self.controls = controls
         self.update = update
         self.automatic_apps = automatic_apps
+        self.manual_ready = manual_ready
+        self.prepare_manual = prepare_manual
+        self.progress_callback = progress
         self.scenes = {}
         self.session = None
 
     def advance(self, state, scene_id=None, reason=None):
         self.store.transition(self.run_id, state, scene_id, reason)
         self.update(state, reason or "")
+        self.report_progress(remaining_seconds=None)
+
+    def report_progress(self, **changes):
+        if self.progress_callback:
+            self.progress = replace(self.progress, **changes)
+            self.progress_callback(self.progress)
 
     def check_cancelled(self):
         if self.controls.cancel.is_set():
             raise Cancelled("操作员取消")
 
-    def wait(self, seconds, check=None):
+    def wait(self, seconds, check=None, *, countdown=False):
         deadline = time.monotonic() + seconds
         next_check = 0.0
+        previous_remaining = None
         while True:
             self.check_cancelled()
             now = time.monotonic()
+            if countdown:
+                remaining = max(0, math.ceil(deadline - now))
+                if remaining != previous_remaining:
+                    self.report_progress(remaining_seconds=remaining, phase_seconds=math.ceil(seconds))
+                    previous_remaining = remaining
             if check is not None and now >= next_check:
                 check()
                 next_check = now + 2
             if now >= deadline:
                 return
-            self.controls.cancel.wait(min(0.1, deadline - now))
+            self.controls.cancel.wait(max(0, min(0.1, deadline - time.monotonic())))
 
     def wait_state(self, package, arg, target, timeout=30, *, cancellable=True):
         deadline = time.monotonic() + timeout
@@ -177,14 +205,17 @@ class Runner:
         ):
             raise DeviceError("Logger 事件回执不匹配")
 
-    def confirm(self, scene, instance, *, exit_scene=False):
+    def confirm(self, scene, instance, *, exit_scene=False, prepared=False):
         self.controls.manual.clear()
         self.controls.skip.clear()
         prompt = "请在手机上退出当前场景并确认" if exit_scene else (
             scene.instructions or f"请在手机上进入场景 {scene.scene_id}，完成后确认"
         )
-        self.advance("WAITING_MANUAL_EXIT" if exit_scene else "WAITING_MANUAL_CONFIRM",
-                     instance, prompt)
+        state = "WAITING_MANUAL_EXIT" if exit_scene else "WAITING_MANUAL_CONFIRM"
+        if prepared:
+            state = "MANUAL_CAPTURE_PREPARED"
+            prompt = "采集已准备好。请在手机上切到目标场景，然后点击「开始手动采样」。"
+        self.advance(state, instance, prompt)
         deadline = time.monotonic() + scene.manual_timeout_seconds
         while time.monotonic() < deadline:
             self.check_cancelled()
@@ -192,7 +223,8 @@ class Runner:
                 raise Skipped("操作员跳过场景")
             if self.controls.manual.wait(0.2):
                 return
-        raise Skipped("人工确认超时") if scene.on_failure == "skip" else DeviceError("人工确认超时")
+        reason = "准备采集后未在时限内开始手动采样" if prepared else "人工确认超时"
+        raise Skipped(reason) if scene.on_failure == "skip" else DeviceError(reason)
 
     def start_auto(self, scene, instance):
         duration = str(int(scene.stabilize_seconds + scene.measure_seconds) + 90)
@@ -239,8 +271,11 @@ class Runner:
                 self.start_auto(scene, instance)
                 readiness = "app_ack"
             elif scene.mode == "manual":
-                self.confirm(scene, instance)
-                readiness = "manual_confirm"
+                if self.prepare_manual:
+                    self.confirm(scene, instance, prepared=True)
+                elif not self.manual_ready:
+                    self.confirm(scene, instance)
+                readiness = "manual_preselected" if self.manual_ready else "manual_confirm"
             else:
                 launcher = self.baseline()
                 readiness = "launcher_observed"
@@ -257,10 +292,10 @@ class Runner:
                 if launcher and not self.is_home(launcher):
                     raise DeviceError("基准场景已离开系统启动器")
 
-            self.wait(scene.stabilize_seconds, health)
+            self.wait(scene.stabilize_seconds, health, countdown=True)
             self.advance("MEASURING", instance)
             self.mark(instance, "MEASUREMENT_START")
-            self.wait(scene.measure_seconds, health)
+            self.wait(scene.measure_seconds, health, countdown=True)
             health()
             self.mark(instance, "MEASUREMENT_END")
             measurement_finished = True
@@ -284,11 +319,16 @@ class Runner:
             if type(failure) is DeviceError and scene.on_failure == "skip":
                 raise Skipped(str(failure)) from failure
             raise failure
-        if scene.mode == "manual":
+        if scene.mode == "manual" and not self.manual_ready:
             self.confirm(scene, instance, exit_scene=True)
 
     def run(self, plan: Plan) -> tuple[str, str]:
+        if self.prepare_manual and not self.manual_ready:
+            raise ValueError("准备采集只支持单独的手动采样")
+        if self.manual_ready and (len(plan.scenes) != 1 or plan.scenes[0].mode != "manual"):
+            raise ValueError("手动采样一次只执行一个手动场景")
         self.run_id = self.store.create(plan)
+        self.progress = RunProgress(total=sum(scene.repeat for scene in plan.scenes))
         self.folder = self.store.path(self.run_id)
         self.calibrations = {}
         self.scenes = {}
@@ -309,20 +349,31 @@ class Runner:
             })
             variant = "并装联调版" if self.adb.test_apps else "正式版"
             self.advance("LOGGER_START", reason=f"已通过{variant}应用检查")
-            output = self.adb.run("shell", "am", "start", "-W", "-n",
-                                  self.adb.component(LOGGER, "MainActivity"))
-            if b"Error:" in output:
-                raise DeviceError("无法打开 Logger 主界面")
+            if not self.manual_ready or self.prepare_manual:
+                output = self.adb.run("shell", "am", "start", "-W", "-n",
+                                      self.adb.component(LOGGER, "MainActivity"))
+                if b"Error:" in output:
+                    raise DeviceError("无法打开 Logger 主界面")
             logger_requested = True
             arg = self.run_id + (":nmea" if plan.collect_nmea else "")
             if not plan.collect_raw:
                 arg += ":status_only"
-            self.adb.call(LOGGER, "start", arg)
-            self.session = self.wait_state(LOGGER, self.run_id, "STARTED")
+            try:
+                self.adb.call(LOGGER, "start", arg)
+                self.session = self.wait_state(LOGGER, self.run_id, "STARTED")
+            except DeviceError as error:
+                if "LOGGER_BUSY" in str(error):
+                    logger_requested = False
+                    raise DeviceError("采集应用已有任务在运行，请结束该任务后重试。") from error
+                if self.manual_ready and "FOREGROUND_START_DENIED" in str(error):
+                    logger_requested = False
+                    raise DeviceError("手机拒绝后台启动采集。请先点「准备采集」，再手动切到目标场景。") from error
+                raise
             self.advance("LOGGER_READY")
             self.calibrate("start", plan)
+            processed = 0
             for scene in plan.scenes:
-                for _ in range(scene.repeat):
+                for repetition in range(1, scene.repeat + 1):
                     if self.controls.pause.is_set():
                         self.advance("PAUSED")
                         while self.controls.pause.is_set():
@@ -330,11 +381,14 @@ class Runner:
                         self.logger_health()
                     self.check_cancelled()
                     instance = str(uuid4())
+                    self.report_progress(scene=scene.scene_id, repetition=repetition, repeats=scene.repeat)
                     self.advance("PREPARING_SCENE", instance, scene.scene_id)
                     try:
                         self.execute_scene(scene, instance)
                     except Skipped as error:
                         self.advance("SKIPPED", instance, str(error))
+                    processed += 1
+                    self.report_progress(processed=processed, scene="", repetition=0, repeats=0)
             self.calibrate("end", plan)
             state = "COMPLETED"
         except Cancelled as error:
@@ -353,7 +407,7 @@ class Runner:
                     if any(row["quality"] == "TIME_SYNC_LOW_CONFIDENCE"
                            for row in self.calibrations.values()):
                         state, reason = "COMPLETED_WITH_WARNINGS", "TIME_SYNC_LOW_CONFIDENCE"
-                    elif (not result["comparisons"] or any(
+                    elif (not (result["comparisons"] or result.get("windows")) or any(
                         row["quality"] != "OBSERVED"
                         for row in result["comparisons"] + result.get("windows", [])
                     )):
