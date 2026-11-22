@@ -67,7 +67,7 @@ def test_checked_scenes_share_timings_and_keep_grid_order(window):
         ("motor", "auto"), ("video", "auto"),
     ]
     assert {(s.stabilize_seconds, s.measure_seconds, s.repeat) for s in plan.scenes} == {(2.5, 12, 3)}
-    assert not window.automatic_mode.isEnabled()
+    assert window.automatic_mode.isEnabled()
     for checkbox in window.scene_checks.values():
         checkbox.setChecked(False)
     with pytest.raises(ValueError, match="至少勾选"):
@@ -91,9 +91,19 @@ def test_single_scene_uses_manual_only_when_automatic_is_unchecked(window):
     assert window.current_plan().scenes[0].mode == "manual"
     assert window.start.text() == "开始手动采样"
     window.scene_checks["navigation_manual"].setChecked(True)
-    assert window.automatic_mode.isChecked()
+    assert window.current_plan().scenes[0].scene_id == "navigation_manual"
+    assert window.current_plan().scenes[0].mode == "manual"
+    window.automatic_mode.setChecked(True)
     with pytest.raises(ValueError, match="外部场景"):
         window.current_plan()
+
+
+def test_disabling_automatic_keeps_screen_off_then_allows_replacing_it(window):
+    window.automatic_mode.click()
+    assert [(s.scene_id, s.mode) for s in window.current_plan().scenes] == [("screen_off", "manual")]
+    assert "电源键" in window.mode_hint.text()
+    window.scene_checks["music"].click()
+    assert [(s.scene_id, s.mode) for s in window.current_plan().scenes] == [("music", "manual")]
 
 
 def test_imported_plan_shares_first_item_parameters_with_notice(window):
