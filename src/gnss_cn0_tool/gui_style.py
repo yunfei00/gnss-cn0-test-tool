@@ -10,7 +10,6 @@ QToolButton#navigate { color: #c0d2e9; border: 0; border-radius: 7px;
                         padding: 10px 15px; text-align: left; font-weight: bold; }
 QToolButton#navigate:hover { background: #203957; }
 QToolButton#navigate:checked { background: #254562; color: #ffffff; }
-QLabel#pageTitle { font-size: 28px; font-weight: bold; color: #142743; }
 QLabel#sectionTitle { font-size: 16px; font-weight: bold; }
 QLabel#muted { color: #526781; }
 QLabel#statusTitle { font-size: 15px; font-weight: bold; }
