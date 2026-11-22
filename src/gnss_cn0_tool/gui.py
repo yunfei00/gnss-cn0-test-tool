@@ -54,6 +54,7 @@ SCENE_NAMES = {
     "manual_scene": "自定义手动场景",
 }
 RUN_STATES = {
+    "PREPARING_DISPLAY": "正在唤醒手机并检查锁屏",
     "PREFLIGHT": "正在检查设备和测试应用", "LOGGER_START": "正在启动采集",
     "LOGGER_READY": "采集已启动，正在标定时钟", "PREPARING_SCENE": "正在准备场景",
     "WAIT_SCENE_READY": "正在等待场景就绪", "WAITING_MANUAL_CONFIRM": "等待确认进入场景",
