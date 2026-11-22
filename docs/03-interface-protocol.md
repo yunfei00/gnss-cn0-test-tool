@@ -1,5 +1,31 @@
 # 03 跨仓库接口协议 v1（设计草案）
 
+## v1 实施约定
+
+协议使用两个独立的 ContentProvider，authority 分别为
+`com.example.gnsslogger.gnss_test` 和 `com.yunfei.autotestscene.gnss_test`。
+Provider 在每个操作校验调用方为 Android shell UID 2000。控制通过
+`adb -s SERIAL shell content call --uri content://AUTHORITY --method METHOD --arg VALUE`。
+响应 Bundle 的 `reply` 为无填充 Base64URL 编码的 UTF-8 JSON。
+错误响应包含 `state=ERROR` 和 `reason`。
+
+- 两端的 `capabilities` 返回 `protocol_version=1`、`app_version` 及支持的操作。
+- 场景启动复用 SceneEntryActivity 并附加 `protocol_version`（int）、
+  `scene_instance_id`（UUID）和 `duration`（安全超时秒数）。实例 ID 同时用作启动/停止
+  的幂等键。场景 Provider 的 `status`、`stop` 参数均为实例 ID。
+  支持范围由实时能力声明决定。旧 Activity 参数仍可用。
+- Logger 的 `start`、`status`、`stop`、`export` 使用 run UUID。
+  主界面在首次启动采集时应位于前台。run UUID 是 start/stop 的幂等键。
+  `start` 可附加 `:nmea` 以显式启用 NMEA。默认记录卫星状态和 Raw Measurements，
+  卫星 CSV 的位置列留空，原始数据仅在本机保留。附加 `:status_only` 可关闭 Raw Measurements。
+  `mark` 的参数格式为 `run_uuid:scene_uuid:event_uuid:event_type`。
+  `clock` 返回手机 UTC、elapsed realtime ns 和 Android boot count。
+- `export` 返回 schema v1 清单。文件用
+  `adb -s SERIAL exec-out content read --uri content://AUTHORITY/files/RUN_UUID/NAME`
+  读取。NAME 来自固定文件名表，只有已停止的会话可访问。清单包含大小、SHA-256 和行数。
+- 旧 Logger START/STOP 广播继续用于原有交互式采集。v1 使用 JSONL 标注场景，
+  卫星 CSV 无需增加 scene_name。无 v1 能力握手的 APP 不适用于完整实时测试。
+
 > 本文为 **TO-BE 协议**，不是当前 APP 已实现 API 清单。任何新增命令在代码落地并真机验收前必须标记为“待实现”。`docs/08-repository-audit.md` 区分已有能力和差距。
 
 ## 1. 基本原则
