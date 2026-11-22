@@ -63,10 +63,8 @@ class Plan:
     @classmethod
     def default(cls):
         return cls((
-            Scene("baseline"), Scene("video"), Scene("baseline"), Scene("game_heavy"),
-            Scene("baseline"),
+            Scene("baseline"), Scene("video"), Scene("game_heavy"),
             Scene("navigation_manual", "manual", instructions="请在手机上打开导航并启动路线"),
-            Scene("baseline"),
         ))
 
 

@@ -44,4 +44,7 @@ QHeaderView::section { background: #edf3fa; color: #365371; border: 0;
                        border-bottom: 1px solid #dbe5f0; padding: 8px 7px; font-weight: bold; }
 QHeaderView::section:vertical { padding: 5px; }
 QTableCornerButton::section { background: #edf3fa; border: 0; }
+QProgressBar { color: #172740; background: #dce7f8; border: 0; border-radius: 6px;
+               min-height: 20px; text-align: center; }
+QProgressBar::chunk { background: #83aff0; border-radius: 6px; }
 """
