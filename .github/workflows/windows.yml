@@ -1,0 +1,45 @@
+name: Windows CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows checks and packages
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra dev --python 3.12
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync pytest -q
+      - run: uv run --no-sync python -m compileall -q src
+      - name: Build Windows x64 packages
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC missing from Windows runner" }
+          .\packaging\build.ps1 -Python .\.venv\Scripts\python.exe -Iscc $iscc
+      - name: Smoke-test a silent per-user installation
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "GNSS-CN0-Installed"
+          $arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", ('/DIR="{0}"' -f $target))
+          $installer = Resolve-Path dist\GNSS-CN0-Setup-x64.exe
+          $install = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+          if ($install.ExitCode -ne 0) { throw "Installer exit code $($install.ExitCode)" }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $smoke = Start-Process -FilePath (Join-Path $target "GNSS-CN0.exe") -ArgumentList "--smoke" -Wait -PassThru -WindowStyle Hidden
+          if ($smoke.ExitCode -ne 0) { throw "Installed program failed smoke test" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GNSS-CN0-Windows-x64
+          path: dist/GNSS-CN0-*
+          if-no-files-found: error
