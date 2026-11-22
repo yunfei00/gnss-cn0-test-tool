@@ -40,7 +40,7 @@ class Plan:
     frequency_tolerance_hz: int = 2_000_000
     min_samples: int = 1
     collect_nmea: bool = False
-    collect_raw: bool = True
+    collect_raw: bool = False
 
     def __post_init__(self):
         if not self.scenes or not 0 < self.max_uncertainty_ms <= 10000:

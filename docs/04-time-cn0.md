@@ -36,6 +36,8 @@ v1 上位机使用普通 ADB shell 读取 Android `/proc/uptime` 与 UTC，并�
 Logger 时钟核对开机纪元及单调区间。样本按 RTT/2 加开机时长显示量化间隔估算
 不确定度。设备不支持命令或读数无法对齐时回退到 Logger 时钟探测。
 分窗仍直接使用 Logger 的 MEASUREMENT_START/END。
+时基和量化细节见 [Linux uptime 实现](https://raw.githubusercontent.com/torvalds/linux/master/fs/proc/uptime.c)
+与 [Android SystemClock](https://developer.android.com/reference/android/os/SystemClock)。
 
 ## 4. 时钟异常处理
 

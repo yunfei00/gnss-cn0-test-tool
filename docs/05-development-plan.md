@@ -100,10 +100,10 @@ tests/fixtures/
 | 规划文档 | DOCUMENTED |
 | P0 真实设备验证 | ADB、权限、旧版采集和 L1 载波有真机证据。旧版 STOP 失败已复现。有效 L5 尚未验收 |
 | P1-A 场景接口 | Android CI 通过并合并。视频、音乐、游戏、前摄和后摄 READY/STOPPED 实测通过 |
-| P1-B Logger 接口 | Android CI 通过并合并。真机状态采集、幂等事件与脱敏状态导出通过。Raw/NMEA 真机导出 NOT_RUN |
+| P1-B Logger 接口 | Android CI 通过并合并。真机状态采集、幂等事件与脱敏状态导出通过。Raw/NMEA 联采实测超时，导出未验收 |
 | P2 框架 | ADB、能力握手、SQLite、校验和离线回放已实现。真机状态数据回收及导入通过 |
 | P3 编排 | 自动基准、视频和游戏端到端通过。真机未确认路径按时跳过，重试经操作员确认完成自动视频和导航联合测量 |
-| P4 时间/算法 | 固定样本、边界、重启校验和 Excel 复算通过。真机时钟标定降级，本轮可用 GPS C/N0 不足 |
+| P4 时间/算法 | 固定样本、边界、重启校验和 Excel 复算通过。低延迟标定复验通过 500 ms 门限。真机有效 GPS C/N0 与 L5 差值 BLOCKED |
 | P5 GUI/交付 | Windows CI 及工作机安装冒烟通过。无 Python 的干净 Windows 10/11 客户端真机验收 NOT_RUN |
 | P6 扩展 | BACKLOG |
 

@@ -26,6 +26,8 @@ Scene `692495560b01d6bd875d3fe430e5fa5a39295e89`。手机上的旧版 APK 均报
   `-PgnssTestSideBySide` 构建带 `.gnsstest` 后缀的 APK，原有 APP 与数据保留。
 - Logger run 的卫星 CSV 由 shell 专用 Provider 导出。真实运行只接收去掉位置字段值的卫星 CSV
   和 JSONL，清单中的文件大小、SHA-256、行数验证通过。
+- 可选 Raw/NMEA 联采在测量结束标记与停止时出现超时。并装测试进程已结束，数据保留。
+  Windows 默认仅采集已通过联调的卫星状态和事件。
 - Scene SDK CI 失败源于 setup-android 请求已移除的 `tools` 包。两个仓库改用 runner
   的 SDK Manager 显式安装依赖后，原有单测、lint 和 APK 构建全部通过。
 - Windows main 已要求 PR 和 Windows 构建检查。详细结果见 [验收记录](06-acceptance.md)。

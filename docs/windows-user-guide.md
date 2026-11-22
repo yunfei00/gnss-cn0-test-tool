@@ -21,8 +21,9 @@
    测量完成后按提示退出。可跳过人工环节、在完整场景结束后暂停或取消整个任务。
 4. 在“历史与结果”查看结果和趋势。报告保存在 `%LOCALAPPDATA%\GNSS CN0\runs`。
 
-卫星状态和事件默认存档，Raw Measurements 可在计划 JSON 中通过
-`collect_raw: false` 关闭，NMEA 可通过 `collect_nmea: true` 启用。
+卫星状态和事件默认存档。计划 JSON 可以通过 `collect_raw: true` 启用
+Raw Measurements，通过 `collect_nmea: true` 启用 NMEA。
+Raw 和 NMEA 联采在当前测试手机上出现超时，正式测量使用默认采集选项。
 位置列在自动化采集中的卫星 CSV 留空。Raw 和 NMEA 可能包含敏感信息，
 运行目录仅供本机分析。日志在传回之后按大小、SHA-256 和行数核验。
 没有可比卫星或 L5 数据时报告显示对应原因，差值单元格留空。

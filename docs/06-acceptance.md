@@ -11,7 +11,8 @@
 | AC-06–09 时间与异常、AC-10–14 频段/CSV | PASS（固定样本） | 边界包含 START 并排除 END。UTC 跳变、会话纪元错误、重复帧、坏文件和缺少 L5 回归通过 |
 | AC-16、AC-18、AC-21 断线、STOP 与 READY | PASS（自动化/已覆盖路径） | 断线不补写结束边界。旧版 STOP 失败通过真机复现。新版真机确认视频和游戏停止 |
 | AC-20、AC-22 报告与 A-B-A | PASS（固定样本） | GPS G03 L1，A=43、B=40，差值 +3 dB，A-B-A 基准漂移 +2 dB |
-| 真机 C/N0 和时间质量 | 未通过质量门限 | 自动测试 GPS 状态中 1,824 条 L1 载波记录，L5 为 0，GPS C/N0 无有效正值。自动运行最低不确定度为 601.609 ms / 598.402 ms，视频和导航联合运行约 616.7 ms / 619.2 ms，均超过默认 500 ms，报告标记 TIME_SYNC_LOW_CONFIDENCE |
+| 真机时钟标定 | PASS（500 ms 门限） | 早期 Provider 标定最低约 598–619 ms，保留 TIME_SYNC_LOW_CONFIDENCE。改用经 Logger 前后读数核对的内核时钟后，真机 run `59a14824-ffee-44ef-a0d9-76865a79e7c2` 的起止不确定度为 73.9 / 81.1 ms，6,835 行卫星 CSV 和 14 条事件核验通过 |
+| 真机 GPS C/N0 与 L5 差值 | BLOCKED | 首次自动测试出现 1,824 条 GPS L1 载波记录，但无有效正值 C/N0 和 L5。最后一轮三个窗口仍无可用 GPS L1/L5，按操作员确认保留当前信号条件和未通过结果 |
 | AC-19 Windows 包 | PASS（CI 与工作机安装冒烟） | Windows CI 构建 x64 安装包与便携包。工作机以仅含 System32 的 PATH 启动安装版和便携版，并用安装版复算真机 Excel，原始 CSV 的哈希前后一致。干净 Win10/11 客户端真机流程 NOT_RUN |
 | AC-24 隐私 | PASS（此次运行范围） | 真机模式关闭 Raw 和 NMEA，卫星 CSV 经纬度列为空。真实原始文件仅留本机 |
 
@@ -20,10 +21,13 @@ Android 构建证据为 [Logger PR CI](https://github.com/yunfei00/GnssLoggerApp
 [Scene PR CI](https://github.com/yunfei00/AutoTestSceneApp/actions/runs/45008416990)。
 两端合并后 [Logger main CI](https://github.com/yunfei00/GnssLoggerApp/actions/runs/45008875827)、
 [Scene main CI](https://github.com/yunfei00/AutoTestSceneApp/actions/runs/45008886429) 通过。
-Windows 验证与安装产物见 [Windows PR](https://github.com/yunfei00/gnss-cn0-test-tool/pull/1)。
+Windows 验证与安装产物见 [Windows PR](https://github.com/yunfei00/gnss-cn0-test-tool/pull/1) 和
+[标定修复 CI](https://github.com/yunfei00/gnss-cn0-test-tool/actions/runs/45009859495)。
 
-旧版 GNSS CSV 传至工作机的请求被自动审批拒绝。P0 通过手机内统计复核旧样本。
-新版设备闭环仅提取位置列留空的状态和事件。Raw/NMEA 真实数据回收 NOT_RUN。
+旧版 GNSS CSV 传至工作机的请求因潜在位置数据被自动审批拒绝。P0 通过手机内统计复核旧样本。
+新版闭环只回收位置列留空的状态和事件。可选 Raw/NMEA 联采实测出现
+`LOGGER_TimeoutException`，已停止并装测试进程并保留数据。自动审批因潜在敏感原始
+文件拒绝了后续复测命令，完整 Raw/NMEA 真机回收为 NOT_RUN。Windows 默认关闭这两项。
 
 ## 测试层次
 

@@ -49,7 +49,7 @@ class Window(QMainWindow):
         self.worker = None
         self.options = {
             "max_uncertainty_ms": 500, "frequency_tolerance_hz": 2_000_000, "min_samples": 1,
-            "collect_nmea": False, "collect_raw": True,
+            "collect_nmea": False, "collect_raw": False,
         }
         self.devices = QComboBox()
         self.adb_path = QLineEdit("adb")
