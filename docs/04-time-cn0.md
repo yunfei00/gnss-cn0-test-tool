@@ -32,6 +32,11 @@ Android 端 `SystemClock.elapsedRealtimeNanos()` 表示从启动以来的单调�
 
 不得声称“毫秒级精准同步”直至真实 RTT/不确定度验收。任何跨端估计都不能替代手机内事件作为测试事实。若超出 `max_uncertainty_ms`，结果标记 TIME_SYNC_LOW_CONFIDENCE，而非静默通过。
 
+v1 上位机使用普通 ADB shell 读取 Android `/proc/uptime` 与 UTC，并在采样前后用
+Logger 时钟核对开机纪元及单调区间。样本按 RTT/2 加开机时长显示量化间隔估算
+不确定度。设备不支持命令或读数无法对齐时回退到 Logger 时钟探测。
+分窗仍直接使用 Logger 的 MEASUREMENT_START/END。
+
 ## 4. 时钟异常处理
 
 | 异常 | 处理 |

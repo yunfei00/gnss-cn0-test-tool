@@ -28,6 +28,10 @@ class FakeAdb:
     def capabilities(self, package, operations):
         return {"protocol_version": 1, "scene_ids": ["video"]}
 
+    def kernel_clock(self):
+        self.clock += 1
+        return {"elapsed_realtime_nanos": self.clock, "quantization_ns": 10}
+
     def call(self, package, method, arg=None):
         if package == SCENE:
             if method == "stop":
@@ -110,3 +114,19 @@ def test_disconnect_keeps_window_open_and_records_interruption(tmp_path, monkeyp
     assert state == "INTERRUPTED"
     assert "MEASUREMENT_START" in fake.events
     assert "MEASUREMENT_END" not in fake.events
+
+
+def test_unavailable_kernel_clock_falls_back_and_preserves_quality_flag(tmp_path, monkeypatch):
+    fake = FakeAdb()
+
+    def unsupported_clock():
+        raise DeviceError("unsupported uptime")
+
+    monkeypatch.setattr(fake, "kernel_clock", unsupported_clock)
+    monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {"comparisons": [{"quality": "OBSERVED"}]})
+    runner = Runner(fake, RunStore(tmp_path), RunControls(), lambda *_: None)
+    runner.run(Plan((Scene("video", stabilize_seconds=0, measure_seconds=0.01),)))
+    audit = runner.calibrations["start"]
+    assert audit["fallback_reason"] == "unsupported uptime"
+    assert audit["best"]["source"] == "logger_provider"
+    assert len(audit["samples"]) == 9

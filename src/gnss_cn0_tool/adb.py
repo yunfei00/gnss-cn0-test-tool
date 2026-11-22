@@ -117,6 +117,20 @@ class Adb:
             raise DeviceError(f"{package} 缺少需要的 v1 能力")
         return reply
 
+    def kernel_clock(self) -> dict:
+        output = self.run("shell", "cat /proc/uptime && date +%s%N", timeout=5)
+        match = re.fullmatch(rb"(\d{1,12})\.(\d{1,9}) [^\r\n]+\r?\n(\d{19})\s*", output)
+        if match is None:
+            raise DeviceError("Android 内核时钟响应格式不受支持")
+        seconds, fraction, utc = match.groups()
+        quantum = 10 ** (9 - len(fraction))
+        return {
+            "elapsed_realtime_nanos": int(seconds) * 1_000_000_000 + int(fraction) * quantum,
+            "timestamp_ms": int(utc) // 1_000_000,
+            "quantization_ns": quantum,
+            "source": "android_proc_uptime",
+        }
+
     def export(self, run_id: str, folder: Path) -> dict:
         if str(UUID(run_id)) != run_id:
             raise ValueError("无效运行 ID")

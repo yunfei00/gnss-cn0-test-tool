@@ -84,23 +84,47 @@ class Runner:
             raise DeviceDisconnected("采集会话或 Android 开机纪元已改变")
 
     def calibrate(self, label, plan):
-        samples = []
-        for _ in range(9):
+        boot_count = self.session["boot_count"]
+
+        def probe(read_clock):
             self.check_cancelled()
             utc = time.time_ns()
             t1 = time.monotonic_ns()
-            reply = self.adb.call(LOGGER, "clock")
+            reply = read_clock()
             t3 = time.monotonic_ns()
-            if reply["boot_count"] != self.session["boot_count"]:
+            if reply.get("boot_count", boot_count) != boot_count:
                 raise DeviceDisconnected("Android 开机纪元已改变")
-            samples.append({
+            return {
                 **reply, "t1_ns": t1, "t3_ns": t3, "pc_utc_ns": utc, "rtt_ns": t3 - t1,
+                "boot_count": boot_count, "source": reply.get("source", "logger_provider"),
                 "offset_ns": reply["elapsed_realtime_nanos"] - (t1 + t3) // 2,
-            })
-        best = min(samples, key=lambda row: row["rtt_ns"])
-        uncertainty = best["rtt_ns"] / 2_000_000
+                "uncertainty_ms": (t3 - t1) / 2_000_000 + reply.get("quantization_ns", 0) / 1_000_000,
+            }
+
+        def logger_clock():
+            return self.adb.call(LOGGER, "clock")
+
+        anchors = []
+        fallback = None
+        try:
+            anchors.append(probe(logger_clock))
+            samples = [probe(self.adb.kernel_clock) for _ in range(9)]
+            anchors.append(probe(logger_clock))
+            elapsed = [sample["elapsed_realtime_nanos"] for sample in samples]
+            lower, upper = (anchor["elapsed_realtime_nanos"] for anchor in anchors)
+            if (elapsed != sorted(elapsed) or elapsed[0] + samples[0]["quantization_ns"] < lower
+                    or elapsed[-1] > upper):
+                raise DeviceError("内核时钟与 Logger 单调时钟读数不一致")
+        except DeviceDisconnected:
+            raise
+        except DeviceError as error:
+            fallback = str(error)
+            samples = [probe(logger_clock) for _ in range(9)]
+        best = min(samples, key=lambda row: row["uncertainty_ms"])
+        uncertainty = best["uncertainty_ms"]
         self.calibrations[label] = {
             "samples": samples, "best": best, "uncertainty_ms": uncertainty,
+            "logger_anchors": anchors, "fallback_reason": fallback,
             "quality": "OK" if uncertainty <= plan.max_uncertainty_ms else "TIME_SYNC_LOW_CONFIDENCE",
         }
         write_json(self.folder / "clock_calibration.json", self.calibrations)
