@@ -1,7 +1,10 @@
+#ifndef AppVersion
+  #error "AppVersion must be supplied by build.ps1"
+#endif
 [Setup]
 AppId=GNSS-CN0-Test-Tool
 AppName=GNSS C/N0 Test Tool
-AppVersion=0.1.0
+AppVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\GNSS CN0 Test Tool
 DefaultGroupName=GNSS C/N0 Test Tool
 PrivilegesRequired=lowest
