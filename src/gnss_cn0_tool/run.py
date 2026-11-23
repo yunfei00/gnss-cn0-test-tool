@@ -9,8 +9,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from gnss_cn0_tool.adb import LOGGER, SCENE, Adb, DeviceDisconnected, DeviceError
+from gnss_cn0_tool.preflight import Check, inspect_settings
 from gnss_cn0_tool.reporting import replay
 from gnss_cn0_tool.store import Plan, RunStore, Scene, write_json
+from gnss_cn0_tool.version import APP_VERSION
 
 DISPLAY_SCENES = {"screen_on": "ON", "screen_off": "OFF"}
 HOST_SCENES = {"baseline", *DISPLAY_SCENES}
@@ -57,6 +59,30 @@ def resolve_apps(adb: Adb, needed: set[str], *, automatic=False):
         return candidate, logger, scene_app
     explanation = "；".join(errors)
     raise DeviceError(f"应用检查失败。请安装支持协议 v1 的对应 Android 应用。{explanation}")
+
+
+def device_readiness(adb, plan, *, automatic_apps=False, manual_background=False):
+    adb.ensure_connected()
+    checks = [Check("USB 调试", "通过", "已连接并授权")]
+    needed = {scene.scene_id for scene in plan.scenes if scene.mode == "auto"} - HOST_SCENES
+    try:
+        selected, logger, scene_app = resolve_apps(adb, needed, automatic=automatic_apps)
+    except DeviceDisconnected:
+        raise
+    except DeviceError as error:
+        return adb, {}, {}, [*checks, Check("应用协议", "失败", str(error))]
+    settings, logger_version, scene_version = inspect_settings(
+        selected, needed, screen_off=any(scene.scene_id == "screen_off" for scene in plan.scenes),
+        manual_background=manual_background,
+    )
+    logger = {**logger_version, **logger}
+    scene_app = {**scene_version, **scene_app}
+    checks.append(Check("GNSS Logger", "通过", f"{logger.get('app_version') or '版本未知'} · 协议 v1"))
+    if needed:
+        checks.append(Check("场景 App", "通过", f"{scene_app.get('app_version') or '版本未知'} · 协议 v1"))
+    else:
+        checks.append(Check("场景 App", "无需验证", "本计划由系统或人工控制场景"))
+    return selected, logger, scene_app, [*checks, *settings]
 
 
 class RunControls:
@@ -463,11 +489,18 @@ class Runner:
             if has_screen_off or any(s.mode == "auto" and s.scene_id == "screen_on" for s in plan.scenes):
                 self.advance("PREPARING_DISPLAY")
                 self.wake_and_dismiss_keyguard()
-            needed = {s.scene_id for s in plan.scenes if s.mode == "auto"} - HOST_SCENES
-            self.adb, logger, scene_app = resolve_apps(self.adb, needed, automatic=self.automatic_apps)
+            self.adb, logger, scene_app, checks = device_readiness(
+                self.adb, plan, automatic_apps=self.automatic_apps,
+                manual_background=self.manual_ready and not self.prepare_manual
+                and all(s.scene_id != "screen_off" for s in plan.scenes),
+            )
+            failed = [str(check) for check in checks if check.status == "失败"]
+            if failed:
+                raise DeviceError("；".join(failed))
             self.check_cancelled()
             write_json(self.folder / "environment.json", {
                 "logger": logger, "scene": scene_app,
+                "windows_version": APP_VERSION,
                 "app_variant": "side_by_side" if self.adb.test_apps else "standard",
                 "device_hash": hashlib.sha256(self.adb.serial.encode()).hexdigest()[:12],
             })

@@ -143,14 +143,18 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes, 
                 "scene_instance_id": scene, "scene_id": scenes.get(scene, {}).get("scene_id"),
                 "readiness_source": scenes.get(scene, {}).get("readiness_source"), "band": band,
                 "start_ns": start, "end_ns": end, "satellites": len(group),
+                "valid_samples": sum(row["samples"] for row in group if row["quality"] == "OBSERVED"),
                 "unknown_frequency_rows": unknown[scene], "quality": quality,
             })
     pairs = []
     per_band = []
     by_window = defaultdict(dict)
+    sample_counts = {}
+    window_quality = {(row.get("scene_instance_id"), row.get("band")): row["quality"] for row in summaries}
     for row in by_satellite:
         if row["quality"] == "OBSERVED":
             by_window[row["scene_instance_id"], row["band"]][row["svid"]] = row["mean_cn0_dbhz"]
+            sample_counts[row["scene_instance_id"], row["band"], row["svid"]] = row["samples"]
     initial = windows[0][2] if windows else None
     baseline = initial
     screen_off = next((
@@ -180,6 +184,12 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes, 
             a, b = by_window[reference, band], by_window[other, band]
             matched = sorted(a.keys() & b.keys())
             deltas = [a[svid] - b[svid] for svid in matched]
+            qualities = {window_quality.get((instance, band)) for instance in (reference, other)}
+            quality = "OBSERVED" if matched else (
+                f"NO_{band}_DATA" if f"NO_{band}_DATA" in qualities else (
+                    "INSUFFICIENT_SAMPLES" if "INSUFFICIENT_SAMPLES" in qualities else "NO_MATCHED_SATELLITES"
+                )
+            )
             for svid, delta in zip(matched, deltas):
                 pairs.append({
                     "a_scene_instance_id": reference, "b_scene_instance_id": other,
@@ -190,12 +200,12 @@ def summarize(windows, invalid, samples, unknown, utc_warning, minimum, scenes, 
                 "a_scene_instance_id": reference, "b_scene_instance_id": other, "band": band,
                 "comparison": comparison_type,
                 "matched_svid": ",".join(map(str, matched)),
+                "a_valid_samples": sum(sample_counts[reference, band, svid] for svid in matched),
+                "b_valid_samples": sum(sample_counts[other, band, svid] for svid in matched),
                 "a_only_svid": ",".join(map(str, sorted(a.keys() - b.keys()))),
                 "b_only_svid": ",".join(map(str, sorted(b.keys() - a.keys()))),
                 "mean_a_minus_b_db": statistics.fmean(deltas) if deltas else None,
-                "quality": "OBSERVED" if deltas else (
-                    "NO_L5_DATA" if band == "L5" and (not a or not b) else "NO_MATCHED_SATELLITES"
-                ),
+                "quality": quality,
             })
         if is_baseline:
             baseline = other

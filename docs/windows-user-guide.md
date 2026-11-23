@@ -7,6 +7,7 @@
 
 预先安装 Android Platform Tools，并将 `adb.exe` 加入 PATH。也可在上位机的
 「连接设置」点「浏览…」选择 `adb.exe`，选定后自动重新扫描手机。已经能扫描到设备时可保持默认 `adb`。
+编辑或选择的路径会保存在当前 Windows 用户的设置中。将输入框清空并离开可恢复默认。
 两个 Android APP 均需支持协议 v1。用 USB 连接测试机，解锁并在手机上确认 USB 调试。
 打开 Logger，按正常权限流程授予精确定位及后台定位，开启系统定位。
 若已装 APK 的签名不同，可在两个 Android 源码仓库使用
@@ -19,9 +20,13 @@
 1. 打开上位机后自动扫描设备，每 3 秒更新一次列表，也可以点击「重新扫描」立即更新。
    首次发现的设备只有一台且已授权时会自动选中。多台设备由操作员从列表选择，
    后续接入设备会加入列表，已选设备断开时需重新选择。列表使用脱敏标识。
+   已选设备和场景后可点「一键自检」检查协议、系统定位和场景所需权限。
+   选了灭屏也会检查受支持的熄屏显示开关。检测到明确的权限或设置阻断时，开始测试会提前停止；
+   无法读取的项目显示待确认，采集和场景就绪仍由实际运行核实。
 2. 在「测试场景」网格中勾选需要执行的场景。网格提供亮屏、前置和后置默认摄像头预览、
    马达、音乐、视频、手电筒、录音机、白屏和灭屏。默认勾选亮屏、视频和灭屏，
    稳定等待 20 秒、测量 60 秒、重复 1 次。三个设置对本轮所有勾选的场景生效。
+   已启动的计划会保存在当前用户设置中，下次启动自动恢复。也可随时点「上次计划」恢复。
    勾选「自动测试」时可多选，按网格顺序执行。取消勾选后只保留一项，优先保留已选的灭屏，
    或保留网格中的第一项。点击另一场景可直接切换手动采样目标。
    自动场景能力由手机查询，新增应用场景需要新版 AutoTestSceneApp。
@@ -44,6 +49,8 @@
 4. 底部进度区显示当前场景、已处理次数和稳定或采样阶段的剩余时间。「运行日志」保留本轮带时间的
    场景切换、阶段进度和失败原因。可在完整场景结束后暂停，
    或取消整个任务。在「历史与报告」查看频段结果和趋势。报告保存在 `%LOCALAPPDATA%\GNSS CN0\runs`。
+   结果页显示参照场景、差值、匹配卫星的有效样本数及缺失原因，并提供「原始目录」。
+   新运行记录 Windows、Logger 和场景 App 的实际版本；旧记录缺少版本或样本列时会保留为空。
    「打开每秒数据」可打开 `observations_1s.csv`，同名 Excel 表也包含测量窗口内每秒一行的记录。
    `time_beijing` 是该秒起点，`frame_time_beijing` 是该秒第一帧的真实采集时间；
    `recorded_frames` 表示该秒实采帧数。无回调的行标为 `NO_FRAME`，不补数。
@@ -67,6 +74,7 @@ uv sync --locked --extra dev --python 3.12
 uv run gnss-cn0 gui
 uv run gnss-cn0 replay C:\path\to\run
 uv run gnss-cn0 recover C:\path\to\run --serial YOUR_ADB_SERIAL
+uv run gnss-cn0 preflight examples/auto-smoke.json --serial YOUR_ADB_SERIAL
 uv run gnss-cn0 run examples/auto-smoke.json --serial YOUR_ADB_SERIAL
 ```
 
@@ -83,3 +91,14 @@ uv sync --locked --extra dev --python 3.12
 
 在干净的 Windows 10/11 x64 环境验收时，准备 Platform Tools 和两款 APP，
 先分别安装和运行安装版及便携版并执行一次离线回放，再用实际手机跑默认计划。
+
+### 1.1.0 发布准备
+
+- Windows 安装器使用 Python 包的产品版本；两个 Android APK 使用 `versionName=1.1.0`、`versionCode=2`。
+- Windows 正式构建可向 `packaging/build.ps1` 传入 `-SignTool`、`-SigningThumbprint` 和
+  `-TimestampUrl`，使用当前签名环境中的证书签署程序和安装器，并在生成校验和前验证签名。
+- 两个 Android 仓库可在授权的发布环境配置 `ANDROID_KEYSTORE_FILE`、
+  `ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`，
+  再用 `gradlew.bat :app:assembleRelease` 构建签名 APK。覆盖升级应使用对应已发布版本的同一签名。
+- 无正式签名材料时使用 unsigned release 产物和并装测试 APK 进行预验收。签名发布、跨品牌和
+  不同 Windows 版本应各自记录验收结果。

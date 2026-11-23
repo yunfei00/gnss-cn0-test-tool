@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries
-from PySide6.QtCore import QPoint, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 from gnss_cn0_tool.adb import Adb, DeviceError
 from gnss_cn0_tool.gui_style import WORKSPACE_STYLE
 from gnss_cn0_tool.reporting import replay
-from gnss_cn0_tool.run import RunControls, Runner, RunProgress
+from gnss_cn0_tool.run import RunControls, Runner, RunProgress, device_readiness
 from gnss_cn0_tool.store import Plan, RunStore, Scene
 
 DEFAULT_SELECTION = {"screen_on", "video", "screen_off"}
@@ -100,6 +100,7 @@ class Window(QMainWindow):
     worker_finished = Signal(str, str)
     devices_found = Signal(str, object, str)
     progress_changed = Signal(object)
+    readiness_finished = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -109,6 +110,8 @@ class Window(QMainWindow):
         self.setStyleSheet(WORKSPACE_STYLE)
         local = Path(os.environ.get("LOCALAPPDATA", Path.home()))
         self.store = RunStore(local / "GNSS CN0" / "runs")
+        self.preferences = QSettings(str(self.store.root.parent / "operator.ini"), QSettings.Format.IniFormat)
+        self.checking = False
         self.controls = RunControls()
         self.worker = None
         self.options = {
@@ -120,10 +123,10 @@ class Window(QMainWindow):
         self.devices.setMinimumWidth(185)
         self.auto_select_device = True
         self.scanned_adb_path = None
-        self.adb_path = QLineEdit("adb")
+        self.adb_path = QLineEdit(self.preferences.value("adb_path", "adb", type=str) or "adb")
         self.adb_path.setPlaceholderText("输入 adb.exe 的完整路径")
         self.adb_path.setToolTip("默认用系统 PATH 中的 adb.exe，也可指定完整路径")
-        self.adb_path.editingFinished.connect(self.refresh_devices)
+        self.adb_path.editingFinished.connect(self.apply_adb_path)
         self.adb_browse = self.button("浏览…", self.browse_adb_path)
         self.device_status = self.label("正在扫描设备…", "pill")
         self.device_status.setMinimumWidth(170)
@@ -133,6 +136,8 @@ class Window(QMainWindow):
             self.app_variant.addItem(title, value)
         self.refresh = QPushButton("重新扫描")
         self.refresh.clicked.connect(self.refresh_devices)
+        self.readiness = self.button("一键自检", self.check_readiness)
+        self.last_plan = self.button("上次计划", self.restore_last_plan)
         self.scene_grid = QWidget()
         self.scene_grid_layout = QGridLayout(self.scene_grid)
         self.scene_grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -161,6 +166,10 @@ class Window(QMainWindow):
         self.last_progress_log = None
         self.history = WorkspaceCombo()
         self.report_status = self.label("选择一项历史测试查看结果。", "muted")
+        self.report_status.setWordWrap(True)
+        self.report_versions = self.label("", "muted")
+        self.report_versions.setWordWrap(True)
+        self.report_versions.hide()
         self.history.currentIndexChanged.connect(self.show_report)
         self.result = QTableWidget()
         self.configure_table(self.result)
@@ -190,11 +199,13 @@ class Window(QMainWindow):
         self.progress_changed.connect(self.show_progress)
         self.worker_finished.connect(self.on_finished)
         self.devices_found.connect(self.apply_devices)
+        self.readiness_finished.connect(self.show_readiness)
         self.tabs = QStackedWidget()
         self.tabs.addWidget(self.plan_page())
         self.tabs.addWidget(self.results_page())
         self.setCentralWidget(self.workspace())
         self.set_plan(Plan.default(), defaults=True)
+        self.restore_last_plan(quiet=True)
         self.automatic_mode.toggled.connect(self.change_test_mode)
         self.load_history()
         self.show_report()
@@ -301,9 +312,10 @@ class Window(QMainWindow):
         device_fields = self.row(
             self.column(self.label("测试手机", "fieldName"), self.devices),
             self.column(self.label("测试应用", "fieldName"), self.app_variant),
-            self.refresh, None, advanced_connection,
+            self.refresh, self.readiness, None, advanced_connection,
         )
         device_fields.layout().setAlignment(self.refresh, Qt.AlignmentFlag.AlignBottom)
+        device_fields.layout().setAlignment(self.readiness, Qt.AlignmentFlag.AlignBottom)
         device_fields.layout().setAlignment(advanced_connection, Qt.AlignmentFlag.AlignBottom)
         device_card = self.column(
             self.row(self.label("设备连接", "sectionTitle"), None, self.device_status),
@@ -318,6 +330,7 @@ class Window(QMainWindow):
         shared_parameters.layout().setAlignment(self.automatic_mode, Qt.AlignmentFlag.AlignBottom)
         self.plan_card = self.column(
             self.row(self.label("测试场景", "sectionTitle"), self.plan_count, None,
+                     self.last_plan,
                      self.button("导入", self.load_plan), self.button("保存", self.save_plan),
                      self.button("添加手动场景", self.add_manual_scene, "quiet")),
             self.scene_grid,
@@ -337,11 +350,12 @@ class Window(QMainWindow):
         panel = self.column(
             self.row(self.history, None, self.button("打开每秒数据", self.open_timed_data),
                      self.button("离线回放", self.replay_folder),
+                     self.button("原始目录", self.open_raw_folder),
                      self.button("打开报告目录", self.open_reports)),
-            self.report_status, self.result, self.chart_stack, name="card", margins=14,
+            self.report_status, self.report_versions, self.result, self.chart_stack, name="card", margins=14,
         )
-        panel.layout().setStretch(2, 1)
         panel.layout().setStretch(3, 2)
+        panel.layout().setStretch(4, 2)
         return panel
 
     def selected_scenes(self):
@@ -422,7 +436,74 @@ class Window(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "选择 adb.exe", directory, "ADB (adb.exe)")
         if path:
             self.adb_path.setText(str(Path(path)))
+            self.apply_adb_path()
+
+    def apply_adb_path(self):
+        path = self.adb_path.text().strip() or "adb"
+        self.adb_path.setText(path)
+        self.preferences.setValue("adb_path", path)
+        self.preferences.sync()
+        self.refresh_devices()
+
+    def restore_last_plan(self, *, quiet=False):
+        data = self.preferences.value("last_plan", "", type=str)
+        if data:
+            try:
+                self.set_plan(Plan.from_json(data))
+                return
+            except (ValueError, TypeError, KeyError):
+                if not quiet:
+                    QMessageBox.warning(self, "上次计划", "保存的计划无法读取，请重新选择场景。")
+                return
+        if not quiet:
+            QMessageBox.information(self, "上次计划", "还没有启动过测试计划。")
+
+    def check_readiness(self):
+        device = self.devices.currentData()
+        if not device or device.state != "device":
+            QMessageBox.information(self, "测试自检", "请连接手机、确认 USB 调试授权并从列表选中设备。")
+            return
+        if self.adb_path.text().strip() != self.scanned_adb_path:
             self.refresh_devices()
+            QMessageBox.information(self, "测试自检", "正在扫描当前 ADB 路径，请在设备列表更新后再试。")
+            return
+        try:
+            plan = self.current_plan()
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, "测试自检", str(error))
+            return
+        self.checking = True
+        self.readiness.setEnabled(False)
+        self.start.setEnabled(False)
+        self.prepare.setEnabled(False)
+        self.on_status("正在自检", "检查当前手机和所选场景所需条件。")
+        variant = self.app_variant.currentData()
+        adb = Adb(self.scanned_adb_path, device.serial, test_apps=variant == "test")
+
+        def work():
+            try:
+                _, _, _, checks = device_readiness(
+                    adb, plan, automatic_apps=variant == "auto",
+                    manual_background=any(s.mode == "manual" and s.scene_id != "screen_off" for s in plan.scenes),
+                )
+            except (DeviceError, OSError, ValueError) as error:
+                self.readiness_finished.emit(str(error), [])
+            else:
+                self.readiness_finished.emit("", checks)
+
+        threading.Thread(target=work, name="GNSS readiness", daemon=True).start()
+
+    def show_readiness(self, error, checks):
+        self.checking = False
+        self.readiness.setEnabled(True)
+        self.start.setEnabled(True)
+        self.prepare.setEnabled(True)
+        detail = error or "\n".join(map(str, checks))
+        blocked = bool(error) or any(check.status == "失败" for check in checks)
+        self.on_status("自检发现阻断项" if blocked else "自检完成", "")
+        self.log_message(detail)
+        message = QMessageBox.warning if blocked else QMessageBox.information
+        message(self, "测试自检", detail)
 
     def refresh_devices(self):
         if not self.refresh.isEnabled():
@@ -574,6 +655,8 @@ class Window(QMainWindow):
                 QMessageBox.warning(self, "保存失败", str(error))
 
     def start_run(self, *, prepare=False):
+        if self.checking:
+            return
         executable = self.adb_path.text().strip()
         if executable != self.scanned_adb_path:
             self.refresh_devices()
@@ -591,6 +674,8 @@ class Window(QMainWindow):
         except (ValueError, TypeError) as error:
             self.on_status("请检查场景计划", str(error))
             return
+        self.preferences.setValue("last_plan", json.dumps(plan.as_document(), ensure_ascii=False))
+        self.preferences.sync()
         for event in vars(self.controls).values():
             event.clear()
         variant = self.app_variant.currentData()
@@ -650,6 +735,7 @@ class Window(QMainWindow):
         self.app_variant.setEnabled(not running)
         self.adb_path.setEnabled(not running)
         self.adb_browse.setEnabled(not running)
+        self.readiness.setEnabled(not running and not self.checking)
         self.plan_card.setEnabled(not running)
         self.update_test_mode()
         if running:
@@ -704,9 +790,14 @@ class Window(QMainWindow):
         elif folder:
             self.report_status.setText("此记录没有每秒表。离线回放该运行目录即可补生成。")
 
+    def open_raw_folder(self):
+        folder = self.history.currentData()
+        if folder and (folder / "raw").is_dir():
+            os.startfile(folder / "raw")
+
     def show_window_summary(self, path):
-        self.result.setColumnCount(4)
-        self.result.setHorizontalHeaderLabels(["测试场景", "频段", "卫星数", "数据质量"])
+        self.result.setColumnCount(5)
+        self.result.setHorizontalHeaderLabels(["测试场景", "频段", "卫星数", "有效样本", "数据质量"])
         with path.open(encoding="utf-8-sig", newline="") as stream:
             for index, row in enumerate(csv.DictReader(stream)):
                 scene = row.get("scene_id") or row.get("scene_instance_id", "")[:8]
@@ -714,6 +805,7 @@ class Window(QMainWindow):
                 self.result.insertRow(index)
                 for column, value in enumerate((
                     SCENE_NAMES.get(scene, scene), row.get("band") or "—", row.get("satellites") or "—",
+                    row.get("valid_samples") or "—",
                     QUALITY_STATES.get(quality, quality),
                 )):
                     self.result.setItem(index, column, QTableWidgetItem(value))
@@ -722,11 +814,12 @@ class Window(QMainWindow):
 
     def show_report(self):
         self.chart_stack.setCurrentWidget(self.chart_empty)
+        self.report_versions.hide()
         self.result.clear()
         self.result.setRowCount(0)
-        self.result.setColumnCount(6)
+        self.result.setColumnCount(7)
         self.result.setHorizontalHeaderLabels([
-            "参照场景", "对比场景", "频段", "匹配卫星", "差值 A − B (dB)", "数据质量",
+            "参照场景", "对比场景", "频段", "匹配卫星", "差值 (dB)", "样本 A / B", "数据质量",
         ])
         self.result.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         chart = QChart()
@@ -738,6 +831,17 @@ class Window(QMainWindow):
             self.report_status.setText("选择一项历史测试查看结果。")
             return
         report = folder / "reports"
+        metadata = report / "metadata.csv"
+        if metadata.is_file():
+            with metadata.open(encoding="utf-8-sig", newline="") as stream:
+                versions = next(csv.DictReader(stream), {})
+            keys = ("windows_version", "logger_version", "scene_app_version")
+            if any(versions.get(key) for key in keys):
+                self.report_versions.setText(" · ".join(
+                    f"{label} {versions.get(key) or '未知'}"
+                    for label, key in zip(("Windows", "Logger", "场景 App"), keys, strict=True)
+                ))
+                self.report_versions.show()
         summary = report / "comparisons.csv"
         self.report_status.setText("暂无可比较的场景结果。")
         if summary.is_file():
@@ -762,6 +866,8 @@ class Window(QMainWindow):
                         scene_name(row.get("b_scene_instance_id", "")),
                         row.get("band", ""), row.get("matched_svid") or "—",
                         f"{float(delta):+.2f}" if delta else "—",
+                        f"{row['a_valid_samples']} / {row['b_valid_samples']}"
+                        if row.get("a_valid_samples") and row.get("b_valid_samples") else "—",
                         QUALITY_STATES.get(quality, quality),
                     ]
                     for column, cell in enumerate(cells):
@@ -777,8 +883,8 @@ class Window(QMainWindow):
                 reference = next(csv.DictReader(stream), {}).get("reference_status")
             if reference == "MISSING_SCREEN_OFF_REFERENCE":
                 self.report_status.setText("缺少有效灭屏基准，已保留各场景数据。")
-            elif reference == "SCREEN_OFF" and summary.is_file() and self.result.columnCount() == 6:
-                self.report_status.setText(f"以灭屏为基准 · {self.result.rowCount()} 项频段比较")
+            elif reference == "SCREEN_OFF":
+                self.report_status.setText(f"完全灭屏基准 · {self.report_status.text()}")
         trend = report / "trend.csv"
         if not trend.is_file():
             return

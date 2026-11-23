@@ -49,8 +49,11 @@ class FakeAdb:
         self.stopped = False
         self.clock = 1
 
-    def run(self, *args):
+    def run(self, *args, **kwargs):
         return b""
+
+    def package(self, namespace):
+        return namespace
 
     def component(self, package, activity):
         return f"{package}/.{activity}"
@@ -133,8 +136,10 @@ def test_preselected_manual_scene_does_not_switch_foreground_or_wait(tmp_path, m
     monkeypatch.setattr("gnss_cn0_tool.run.replay", lambda _: {"comparisons": [{"quality": "OBSERVED"}]})
     fake = FakeAdb()
 
-    def reject_foreground_changes(*_):
-        pytest.fail("manual sampling issued a foreground command")
+    def reject_foreground_changes(*args, **kwargs):
+        assert args[:3] != ("shell", "am", "start")
+        assert args[:3] != ("shell", "input", "keyevent")
+        return b""
 
     monkeypatch.setattr(fake, "run", reject_foreground_changes)
     states = []
@@ -156,7 +161,7 @@ def test_prepared_manual_scene_starts_only_after_operator_click(tmp_path, monkey
     })
     fake = FakeAdb()
     commands = []
-    monkeypatch.setattr(fake, "run", lambda *args: commands.append(args) or b"")
+    monkeypatch.setattr(fake, "run", lambda *args, **kwargs: commands.append(args) or b"")
     controls = RunControls()
     states = []
 
@@ -169,7 +174,8 @@ def test_prepared_manual_scene_starts_only_after_operator_click(tmp_path, monkey
     runner = Runner(fake, RunStore(tmp_path), controls, update, manual_ready=True, prepare_manual=True)
     _, state = runner.run(Plan((Scene("external", "manual", 0, 0.02),)))
     assert state == "COMPLETED"
-    assert len(commands) == 1 and commands[0][-1].endswith(".MainActivity")
+    launches = [cmd for cmd in commands if cmd[:3] == ("shell", "am", "start")]
+    assert len(launches) == 1 and launches[0][-1].endswith(".MainActivity")
     assert "WAITING_MANUAL_EXIT" not in states
     assert "MEASUREMENT_END" in fake.events
 
@@ -194,7 +200,7 @@ def test_screen_off_observes_display_and_restores_prior_state(tmp_path, monkeypa
     locked = True
     keys = []
 
-    def adb_run(*args):
+    def adb_run(*args, **kwargs):
         nonlocal state, locked
         if args == ("shell", "dumpsys", "display"):
             return (
@@ -253,7 +259,7 @@ def test_screen_on_uses_home_on_primary_display_and_checks_it_during_sampling(tm
     calls = []
     home = False
 
-    def adb_run(*args):
+    def adb_run(*args, **kwargs):
         nonlocal home
         calls.append(args)
         measuring = "MEASUREMENT_START" in fake.events
