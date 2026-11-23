@@ -77,9 +77,11 @@ def test_half_open_windows_cn0_baseline_drift_and_excel(tmp_path):
     observed = result["comparisons"]
     assert observed[0]["mean_a_minus_b_db"] == 3
     assert observed[0]["matched_svid"] == "3"
+    assert (observed[0]["a_valid_samples"], observed[0]["b_valid_samples"]) == (2, 2)
     assert observed[0]["b_only_svid"] == "12"
     assert observed[1]["quality"] == "NO_L5_DATA"
     assert observed[1]["mean_a_minus_b_db"] is None
+    assert observed[1]["a_valid_samples"] == observed[1]["b_valid_samples"] == 0
     assert observed[2]["comparison"] == "baseline_drift"
     assert observed[2]["mean_a_minus_b_db"] == 2
     assert result["quality"][0]["wall_clock"] == "UTC_JUMP"

@@ -35,9 +35,22 @@ def replay(folder: Path):
         ]
     manifest = json.loads((raw / "manifest.json").read_text(encoding="utf-8"))
     result["raw_files"] = manifest["files"]
+    try:
+        environment = json.loads((folder / "environment.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        environment = {}
+    environment = environment if isinstance(environment, dict) else {}
+    logger = environment.get("logger") or {}
+    scene = environment.get("scene") or {}
+    logger = logger if isinstance(logger, dict) else {}
+    scene = scene if isinstance(scene, dict) else {}
     result["metadata"] = [{
         "test_run_id": manifest["test_run_id"], "logger_session_id": manifest["logger_session_id"],
         "boot_count": manifest["boot_count"], "delta": "A minus B (dB)",
+        "windows_version": environment.get("windows_version"),
+        "logger_version": logger.get("app_version"), "logger_version_code": logger.get("version_code"),
+        "scene_app_version": scene.get("app_version"), "scene_app_version_code": scene.get("version_code"),
+        "app_variant": environment.get("app_variant"),
     }]
     extra = observation_tables(raw, manifest, scenes, options.get("tolerance", 2_000_000))
     write_reports(folder / "reports", result, extra)

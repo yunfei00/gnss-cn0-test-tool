@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QPushButton
@@ -119,6 +121,13 @@ def test_common_scene_catalog_defaults_to_screen_on_video_and_screen_off(window)
     assert window.scene_grid_layout.rowCount() == 3
 
 
+def test_restore_last_plan_preserves_order_and_timing(window):
+    last = Plan((Scene("video", stabilize_seconds=3, measure_seconds=12, repeat=2),))
+    window.preferences.setValue("last_plan", json.dumps(last.as_document()))
+    window.last_plan.click()
+    assert window.current_plan() == last
+
+
 def test_single_scene_uses_manual_only_when_automatic_is_unchecked(window):
     for scene_id, checkbox in window.scene_checks.items():
         checkbox.setChecked(scene_id == "video")
@@ -175,4 +184,4 @@ def test_single_scene_report_shows_window_summary(window, tmp_path):
     window.history.addItem("手动采样", report.parent)
     assert window.result.horizontalHeaderItem(0).text() == "测试场景"
     assert window.result.item(0, 0).text() == "第三方导航"
-    assert window.result.item(0, 3).text() == "无有效 L5 数据"
+    assert window.result.item(0, 4).text() == "无有效 L5 数据"

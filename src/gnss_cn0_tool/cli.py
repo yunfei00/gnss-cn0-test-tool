@@ -5,13 +5,15 @@ from pathlib import Path
 
 from gnss_cn0_tool.adb import Adb, DeviceError
 from gnss_cn0_tool.reporting import replay
-from gnss_cn0_tool.run import RunControls, Runner, recover
+from gnss_cn0_tool.run import RunControls, Runner, device_readiness, recover
 from gnss_cn0_tool.store import Plan, RunStore
+from gnss_cn0_tool.version import APP_VERSION
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="gnss-cn0")
     parser.add_argument("--smoke", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("gui")
     offline = commands.add_parser("replay", help="分析现有运行目录")
@@ -27,6 +29,11 @@ def main() -> int:
     live.add_argument("--adb", default="adb")
     live.add_argument("--root", type=Path, default=Path("runs"))
     live.add_argument("--test-apps", action="store_true")
+    check = commands.add_parser("preflight", help="检查当前手机是否满足所选计划的测试条件")
+    check.add_argument("plan", type=Path)
+    check.add_argument("--serial", required=True)
+    check.add_argument("--adb", default="adb")
+    check.add_argument("--test-apps", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "replay":
@@ -35,6 +42,16 @@ def main() -> int:
         elif args.command == "recover":
             recover(Adb(args.adb, args.serial, test_apps=args.test_apps), args.folder, args.folder.name)
             print(args.folder / "reports" / "report.xlsx")
+        elif args.command == "preflight":
+            plan = Plan.load(args.plan)
+            _, _, _, checks = device_readiness(
+                Adb(args.adb, args.serial, test_apps=args.test_apps),
+                plan, automatic_apps=not args.test_apps,
+                manual_background=any(s.mode == "manual" and s.scene_id != "screen_off" for s in plan.scenes),
+            )
+            for result in checks:
+                print(result)
+            return int(any(result.status == "失败" for result in checks))
         elif args.command == "run":
             controls = RunControls()
             plan = Plan.load(args.plan)

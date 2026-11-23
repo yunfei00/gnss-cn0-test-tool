@@ -52,13 +52,20 @@ class Plan:
 
     @classmethod
     def load(cls, path: Path):
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if data.pop("schema_version") != 1:
+        return cls.from_json(path.read_text(encoding="utf-8-sig"))
+
+    @classmethod
+    def from_json(cls, content: str):
+        data = json.loads(content)
+        if not isinstance(data, dict) or data.pop("schema_version", None) != 1:
             raise ValueError("不支持的计划版本")
         return cls(tuple(Scene(**scene) for scene in data.pop("scenes")), **data)
 
+    def as_document(self):
+        return {"schema_version": 1, **asdict(self)}
+
     def save(self, path: Path):
-        write_json(path, {"schema_version": 1, **asdict(self)})
+        write_json(path, self.as_document())
 
     @classmethod
     def default(cls):

@@ -5,9 +5,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      previous_run_id:
+        description: Previous Windows CI run ID for an installer upgrade test
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   windows:
@@ -27,17 +33,42 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC missing from Windows runner" }
           .\packaging\build.ps1 -Python .\.venv\Scripts\python.exe -Iscc $iscc
+      - name: Download the previous installer for upgrade validation
+        if: github.event_name == 'workflow_dispatch' && inputs.previous_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: GNSS-CN0-Windows-x64
+          path: previous-package
+          run-id: ${{ inputs.previous_run_id }}
+          github-token: ${{ github.token }}
       - name: Smoke-test a silent per-user installation
         shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP "GNSS-CN0-Installed"
           $arguments = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", ('/DIR="{0}"' -f $target))
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "GNSS-CN0-Smoke-Profile"
+          $previous = "previous-package/GNSS-CN0-Setup-x64.exe"
+          if (Test-Path $previous) {
+            $old = Start-Process -FilePath (Resolve-Path $previous) -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+            if ($old.ExitCode -ne 0) { throw "Previous installer failed: $($old.ExitCode)" }
+            $oldSmoke = Start-Process -FilePath (Join-Path $target "GNSS-CN0.exe") -ArgumentList "--smoke" -Wait -PassThru -WindowStyle Hidden
+            if ($oldSmoke.ExitCode -ne 0) { throw "Previous program failed smoke test" }
+            $marker = Join-Path $env:LOCALAPPDATA "GNSS CN0/runs/upgrade-marker"
+            Set-Content -LiteralPath $marker -Value "retain existing operator data"
+          }
           $installer = Resolve-Path dist\GNSS-CN0-Setup-x64.exe
           $install = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
           if ($install.ExitCode -ne 0) { throw "Installer exit code $($install.ExitCode)" }
-          $env:QT_QPA_PLATFORM = "offscreen"
-          $smoke = Start-Process -FilePath (Join-Path $target "GNSS-CN0.exe") -ArgumentList "--smoke" -Wait -PassThru -WindowStyle Hidden
+          $installed = Join-Path $target "GNSS-CN0.exe"
+          if ((Get-FileHash $installed).Hash -ne (Get-FileHash "dist/GNSS-CN0/GNSS-CN0.exe").Hash) {
+            throw "Unexpected installed executable"
+          }
+          $smoke = Start-Process -FilePath $installed -ArgumentList "--smoke" -Wait -PassThru -WindowStyle Hidden
           if ($smoke.ExitCode -ne 0) { throw "Installed program failed smoke test" }
+          if ($marker -and ((Get-Content -LiteralPath $marker -Raw).Trim() -ne "retain existing operator data")) {
+            throw "Operator data was lost during upgrade"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: GNSS-CN0-Windows-x64
